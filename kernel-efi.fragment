@@ -37,3 +37,11 @@ FAT_FS
 VFAT_FS               # FAT（UEFI の起動パーティションの形式）
 NLS_CODEPAGE_437      # FAT のファイル名の文字コード
 NLS_ISO8859_1
+
+# 実機の有線 LAN（よくあるもの）。設定は DHCP
+ETHERNET
+NET_VENDOR_INTEL
+E1000                 # Intel（古め。QEMU の既定の NIC もこれ）
+E1000E                # Intel（デスクトップ・ノートのオンボードに多い）
+NET_VENDOR_REALTEK
+R8169                 # Realtek（デスクトップのオンボードに多い）

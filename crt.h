@@ -1,4 +1,5 @@
-// 外部プログラム用のスタートアップ。_start でスタックから argc・argv・envp を取り出し、main を呼んで exit する
+// スタートアップ（init と外部プログラムで共通）。_start でスタックから argc・argv・envp を取り出し、
+// スタックを 16 バイト境界に揃えてから main を呼んで exit する
 #pragma once
 #include "lib.h"
 

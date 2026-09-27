@@ -21,10 +21,10 @@ class Timeout(Exception):
 
 class VM:
     def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, efi=False, usb_kbd=False,
-                 esp=None, esp_on_usb=False, extra=()):
+                 esp=None, esp_on_usb=False, nic_model="virtio-net-pci", extra=()):
         if disk:
             extra = ("-drive", f"file={disk},format=raw,if=virtio", *extra)
-        extra = ("-nic", "user,model=virtio-net-pci" if net else "none", *extra)
+        extra = ("-nic", f"user,model={nic_model}" if net else "none", *extra)
         if usb_kbd:
             extra = ("-device", "qemu-xhci", "-device", "usb-kbd", *extra)
         # QEMU のモニタ（キー入力の送信、スクリーンショット）を UNIX ソケットで開けておく
@@ -315,7 +315,7 @@ def network():
     vm = VM(net=True)
     try:
         vm.expect(r"\[ OK \] Loopback lo 127\.0\.0\.1")
-        vm.expect(r"\[ OK \] Network eth0 10\.0\.2\.15 via 10\.0\.2\.2")
+        vm.expect(r"\[ OK \] Network eth0 10\.0\.2\.15 via 10\.0\.2\.2 \(DHCP\)")
         vm.expect(PROMPT)
         out = cmd(vm, "ifconfig")
         assert re.search(r"^eth0: UP inet 10\.0\.2\.15 mask 255\.255\.255\.0 ether 52:54:00:12:34:56$", out, re.M), out
@@ -628,6 +628,24 @@ def efi_usb_stick():
             vm.expect(PROMPT)
             assert cmd(vm, "cat /data/note") == "saved on usb"
             assert cmd(vm, "hi again").endswith(" again env=3")
+        finally:
+            vm.kill()
+
+
+@test
+def efi_real_nic_dhcp():
+    """UEFI 版で、実機の NIC（QEMU が再現する Intel e1000e）を DHCP で設定し、ホストと HTTP で話せる"""
+    if not efi_image_fresh():
+        return
+    with HostHTTPServer() as srv:
+        vm = VM(efi=True, net=True, nic_model="e1000e")
+        try:
+            vm.expect(r"\[ OK \] Network eth0 10\.0\.2\.15 via 10\.0\.2\.2 \(DHCP\)", timeout=120)
+            vm.expect(PROMPT)
+            out = cmd(vm, "cat /sys/class/net/eth0/device/uevent")
+            assert "DRIVER=e1000e" in out, out
+            out = cmd(vm, f"fetch http://10.0.2.2:{srv.port}/index.html", timeout=30)
+            assert out.rstrip() == "HTTP/1.0 200 OK\nhello from host", out
         finally:
             vm.kill()
 

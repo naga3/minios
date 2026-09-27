@@ -1,5 +1,5 @@
 // minios の PID 1。起動メッセージを出し、コマンドを受け付ける
-#include "lib.h"
+#include "crt.h"
 #include "net.h"
 
 #define VERSION "0.11"
@@ -87,41 +87,63 @@ static void mount_all(void) {
     print("  [ -- ] No disk: /data is not persistent\n");
 }
 
-// QEMU のユーザーモードネットワーク（slirp）の決まった値
-#define NET_IFACE "eth0"
-#define NET_ADDR  "10.0.2.15"
-#define NET_MASK  "255.255.255.0"
-#define NET_GW    "10.0.2.2"
-#define NET_DNS   "10.0.2.3"
-
 static unsigned int ip(const char *s) {
     int ok;
     return parse_ip(s, &ok);
 }
 
-// lo と eth0 を上げ、eth0 に固定 IP とデフォルトルートを設定する
+// lo 以外で最初に見つかったネットワークインターフェース
+static void pick_iface(const char *name, unsigned char type, void *ctx) {
+    (void)type;
+    char *out = ctx;
+    if (out[0] || name[0] == '.' || seq(name, "lo")) return;
+    for (int i = 0; name[i] && i < 15; i++) out[i] = name[i];
+}
+
+static void write_resolv_conf(unsigned int dns) {
+    long fd = syscall3(SYS_open, "/etc/resolv.conf", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { status("DNS (/etc/resolv.conf)", fd); return; }
+    int saved = syscall3(SYS_dup, 1, 0, 0);
+    syscall3(SYS_dup2, fd, 1, 0);
+    print("nameserver "); print_ip(dns); print("\n");
+    syscall3(SYS_dup2, saved, 1, 0);
+    syscall3(SYS_close, saved, 0, 0);
+    syscall3(SYS_close, fd, 0, 0);
+    print("  [ \033[32mOK\033[0m ] DNS "); print_ip(dns); print(" (/etc/resolv.conf)\n");
+}
+
+// lo を上げ、最初の NIC を DHCP で設定する（アドレス、マスク、デフォルトルート、DNS）
 static void net_up(void) {
     long sock = syscall3(SYS_socket, AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { status("Network", sock); return; }
     long e = if_set_addr(sock, "lo", ip("127.0.0.1"), ip("255.0.0.0"));
     if (e >= 0) e = if_up(sock, "lo");
     status("Loopback lo 127.0.0.1", e);
-    struct stat st;
-    if (syscall3(SYS_stat, "/sys/class/net/" NET_IFACE, &st, 0) < 0) {
+
+    char ifname[16] = {0};
+    each_dirent("/sys/class/net", pick_iface, ifname);
+    if (!ifname[0]) {
         print("  [ -- ] No network interface\n");
+        syscall3(SYS_close, sock, 0, 0);
+        return;
+    }
+    struct dhcp_lease lease;
+    e = if_up(sock, ifname);
+    if (e >= 0) e = dhcp(sock, ifname, &lease);
+    if (e >= 0) e = if_set_addr(sock, ifname, lease.addr, lease.mask ? lease.mask : ip("255.255.255.0"));
+    if (e >= 0 && lease.router) e = route_add_default(sock, lease.router);
+    if (e < 0) {
+        char what[48] = "Network ";
+        size_t n = slen(what);
+        for (const char *p = ifname; *p; p++) what[n++] = *p;
+        for (const char *p = " (DHCP)"; *p; p++) what[n++] = *p;
+        what[n] = 0;
+        status(what, e);
     } else {
-        e = if_set_addr(sock, NET_IFACE, ip(NET_ADDR), ip(NET_MASK));
-        if (e >= 0) e = if_up(sock, NET_IFACE);
-        if (e >= 0) e = route_add_default(sock, ip(NET_GW));
-        status("Network " NET_IFACE " " NET_ADDR " via " NET_GW, e);
+        print("  [ \033[32mOK\033[0m ] Network "); print(ifname); print(" "); print_ip(lease.addr);
+        print(" via "); print_ip(lease.router); print(" (DHCP)\n");
         // ネットワークを設定した init が DNS の設定も書く。無いと Go などは [::1]:53 に問い合わせてしまう
-        static const char resolv[] = "nameserver " NET_DNS "\n";
-        long fd = syscall3(SYS_open, "/etc/resolv.conf", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            write_all(fd, resolv, sizeof resolv - 1);
-            syscall3(SYS_close, fd, 0, 0);
-        }
-        status("DNS " NET_DNS " (/etc/resolv.conf)", fd);
+        if (lease.dns) write_resolv_conf(lease.dns);
     }
     syscall3(SYS_close, sock, 0, 0);
 }
@@ -758,7 +780,10 @@ static long start_session(const char *tty, int first) {
     return pid;
 }
 
-void _start(void) {
+// crt.h の _start がスタックを 16 バイト境界に揃えてから呼ぶ。
+// init を _start から直接書くと揃っておらず、SSE 命令（movaps）で落ちる（周 18 で踏んだ）
+int main(int argc, char **argv, char **envp) {
+    (void)argc, (void)argv, (void)envp;
     print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
     banner();
     mount_all();

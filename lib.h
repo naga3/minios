@@ -189,6 +189,7 @@ static const char *strerror(long err) {
     case 38: return "not implemented (kernel option?)";
     case 39: return "directory not empty";
     case 40: return "too many levels (loop?)";
+    case 110: return "timed out";
     case 116: return "stale file handle (filesystem damaged?)";
     }
     return 0;
