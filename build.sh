@@ -5,14 +5,17 @@ cd "$(dirname "$0")"
 KSRC=linux-7.2.8
 mkdir -p build
 
-# カーネル: tinyconfig + kernel.fragment。設定が変わったときだけビルドし直す
-sed 's/#.*//' kernel.fragment | awk 'NF {printf "-e %s ", $1} END {print ""}' > build/fragment.args
+# カーネル: tinyconfig + kernel.fragment（"!NAME" は無効化）。設定が変わったときだけビルドし直す
+sed 's/#.*//' kernel.fragment | awk 'NF { if ($1 ~ /^!/) printf "-d %s ", substr($1, 2); else printf "-e %s ", $1 } END {print ""}' > build/fragment.args
 if ! cmp -s build/fragment.args build/fragment.args.built || [ ! -f build/bzImage ]; then
     make -C $KSRC -s tinyconfig
     $KSRC/scripts/config --file $KSRC/.config $(cat build/fragment.args)
     make -C $KSRC -s olddefconfig
     for opt in $(sed 's/#.*//' kernel.fragment); do
-        grep -q "^CONFIG_$opt=y" $KSRC/.config || { echo "kernel option not enabled: $opt" >&2; exit 1; }
+        case $opt in
+        !*) ! grep -q "^CONFIG_${opt#!}=y" $KSRC/.config || { echo "kernel option not disabled: ${opt#!}" >&2; exit 1; } ;;
+        *)  grep -q "^CONFIG_$opt=y" $KSRC/.config || { echo "kernel option not enabled: $opt" >&2; exit 1; } ;;
+        esac
     done
     make -C $KSRC -s -j"$(nproc)" bzImage
     cp $KSRC/arch/x86/boot/bzImage build/bzImage

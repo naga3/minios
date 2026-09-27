@@ -20,9 +20,10 @@ class Timeout(Exception):
 
 
 class VM:
-    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, extra=()):
+    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, extra=()):
         if disk:
             extra = ("-drive", f"file={disk},format=raw,if=virtio", *extra)
+        extra = ("-nic", "user,model=virtio-net-pci" if net else "none", *extra)
         self.p = subprocess.Popen(
             ["qemu-system-x86_64", "-m", "64M",
              "-kernel", f"{ROOT}/build/bzImage",
@@ -95,9 +96,9 @@ def test(fn):
 PROMPT = r"minios# "
 
 
-def booted(disk=None):
+def booted(disk=None, net=False):
     """起動してプロンプトが出た VM を返す"""
-    vm = VM(disk=disk)
+    vm = VM(disk=disk, net=net)
     vm.expect(r"kernel: Linux \S+ x86_64")
     vm.expect(PROMPT)
     return vm
@@ -251,6 +252,39 @@ def sync_survives_power_loss():
             vm.kill()
     finally:
         os.unlink(disk)
+
+
+@test
+def network():
+    vm = VM(net=True)
+    try:
+        vm.expect(r"\[ OK \] Loopback lo 127\.0\.0\.1")
+        vm.expect(r"\[ OK \] Network eth0 10\.0\.2\.15 via 10\.0\.2\.2")
+        vm.expect(PROMPT)
+        out = cmd(vm, "ifconfig")
+        assert re.search(r"^eth0: UP inet 10\.0\.2\.15 mask 255\.255\.255\.0 ether 52:54:00:12:34:56$", out, re.M), out
+        assert re.search(r"^lo: UP inet 127\.0\.0\.1 mask 255\.0\.0\.0$", out, re.M), out
+        assert "sit0" not in out, out  # IPv6 を切ったのでトンネルも無い
+        out = cmd(vm, "ping 10.0.2.2 2")
+        assert re.search(r"^reply from 10\.0\.2\.2 seq=2 time=\d+\.\d ms$", out, re.M), out
+        assert out.endswith("2 sent, 2 received"), out
+        assert cmd(vm, "ping 127.0.0.1 1").endswith("1 sent, 1 received")
+        out = cmd(vm, "ping 10.0.2.99 1", timeout=5)
+        assert out == "timeout seq=1\n1 sent, 0 received", out
+        assert cmd(vm, "ping 1.2.3") == "usage: ping <a.b.c.d> [count]: invalid argument"
+    finally:
+        vm.kill()
+
+
+@test
+def no_network():
+    vm = VM()
+    try:
+        vm.expect(r"No network interface")
+        vm.expect(PROMPT)
+        assert cmd(vm, "ifconfig") == "lo: UP inet 127.0.0.1 mask 255.0.0.0"
+    finally:
+        vm.kill()
 
 
 def main():

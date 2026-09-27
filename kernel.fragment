@@ -17,3 +17,9 @@ VIRTIO_BLK            # virtio ディスク（/dev/vda）
 DEVTMPFS              # /dev にデバイスノードを自動で作る
 MISC_FILESYSTEMS      # その他のファイルシステムのメニュー
 MINIX_FS              # 永続ディスクのファイルシステム。ext4 より 150KB 以上小さい
+NET                   # ネットワーク
+INET                  # TCP/IP
+NETDEVICES            # ネットワークデバイスのメニュー
+NET_CORE              # ネットワークドライバの基本
+VIRTIO_NET            # virtio NIC（eth0）
+!IPV6                 # IPv6 は使わない（有効だと sit0 トンネルも出てくる）

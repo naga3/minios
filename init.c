@@ -1,7 +1,8 @@
 // minios の PID 1。起動メッセージを出し、コマンドを受け付ける
 #include "lib.h"
+#include "net.h"
 
-#define VERSION "0.5"
+#define VERSION "0.6"
 
 static void banner(void) {
     struct utsname u;
@@ -33,6 +34,36 @@ static void mount_all(void) {
         return;
     }
     status("Mounted /data (/dev/vda)", mount("/dev/vda", "/data", "minix"));
+}
+
+// QEMU のユーザーモードネットワーク（slirp）の決まった値
+#define NET_IFACE "eth0"
+#define NET_ADDR  "10.0.2.15"
+#define NET_MASK  "255.255.255.0"
+#define NET_GW    "10.0.2.2"
+
+static unsigned int ip(const char *s) {
+    int ok;
+    return parse_ip(s, &ok);
+}
+
+// lo と eth0 を上げ、eth0 に固定 IP とデフォルトルートを設定する
+static void net_up(void) {
+    long sock = syscall3(SYS_socket, AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) { status("Network", sock); return; }
+    long e = if_set_addr(sock, "lo", ip("127.0.0.1"), ip("255.0.0.0"));
+    if (e >= 0) e = if_up(sock, "lo");
+    status("Loopback lo 127.0.0.1", e);
+    struct stat st;
+    if (syscall3(SYS_stat, "/sys/class/net/" NET_IFACE, &st, 0) < 0) {
+        print("  [ -- ] No network interface\n");
+    } else {
+        e = if_set_addr(sock, NET_IFACE, ip(NET_ADDR), ip(NET_MASK));
+        if (e >= 0) e = if_up(sock, NET_IFACE);
+        if (e >= 0) e = route_add_default(sock, ip(NET_GW));
+        status("Network " NET_IFACE " " NET_ADDR " via " NET_GW, e);
+    }
+    syscall3(SYS_close, sock, 0, 0);
 }
 
 // 書き込み待ちのデータをディスクへ書き出し、/data を外す
@@ -254,6 +285,101 @@ static void cmd_df(char *args) {
     }
 }
 
+// ---- ネットワーク ----
+
+static void ifconfig_entry(const char *name, unsigned char type, void *ctx) {
+    (void)type;
+    long sock = *(long *)ctx;
+    if (name[0] == '.') return;
+    struct ifreq r;
+    print(name); print(":");
+    ifr_init(&r, name);
+    if (syscall3(SYS_ioctl, sock, SIOCGIFFLAGS, &r) >= 0) print(r.flags & IFF_UP ? " UP" : " DOWN");
+    ifr_init(&r, name);
+    if (syscall3(SYS_ioctl, sock, SIOCGIFADDR, &r) >= 0) {
+        print(" inet "); print_ip(((struct sockaddr_in *)&r.addr)->sin_addr);
+        ifr_init(&r, name);
+        if (syscall3(SYS_ioctl, sock, SIOCGIFNETMASK, &r) >= 0) {
+            print(" mask "); print_ip(((struct sockaddr_in *)&r.addr)->sin_addr);
+        }
+    }
+    ifr_init(&r, name);
+    if (syscall3(SYS_ioctl, sock, SIOCGIFHWADDR, &r) >= 0 && !seq(name, "lo")) {
+        static const char hex[] = "0123456789abcdef";
+        print(" ether ");
+        for (int i = 0; i < 6; i++) {
+            unsigned char b = r.addr.sa_data[i];
+            char h[3] = {hex[b >> 4], hex[b & 15], 0};
+            if (i) print(":");
+            print(h);
+        }
+    }
+    print("\n");
+}
+
+static void cmd_ifconfig(char *args) {
+    (void)args;
+    long sock = syscall3(SYS_socket, AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) { print_err("socket", sock); return; }
+    long r = each_dirent("/sys/class/net", ifconfig_entry, &sock);
+    if (r < 0) print_err("/sys/class/net", r);
+    syscall3(SYS_close, sock, 0, 0);
+}
+
+struct icmp_echo {
+    unsigned char type, code;
+    unsigned short checksum, id, seq;
+    char payload[32];
+};
+
+// ping <ip> [回数]
+static void cmd_ping(char *args) {
+    char *host = next_word(&args), *count_s = next_word(&args);
+    int ok;
+    unsigned int dst = host ? parse_ip(host, &ok) : 0;
+    if (!host || !ok) { print_err("usage: ping <a.b.c.d> [count]", -22); return; }
+    int count = 3;
+    if (count_s && is_digits(count_s)) {
+        count = 0;
+        for (char *p = count_s; *p; p++) count = count * 10 + (*p - '0');
+    }
+
+    long sock = syscall3(SYS_socket, AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (sock < 0) { print_err("socket", sock); return; }
+    struct timeval tv = {1, 0};
+    syscall6(SYS_setsockopt, sock, SOL_SOCKET, SO_RCVTIMEO, (long)&tv, sizeof tv, 0);
+    struct sockaddr_in to = {.sin_family = AF_INET, .sin_addr = dst};
+    unsigned short id = 0x6d69;  // "mi"
+    int received = 0;
+
+    for (int i = 1; i <= count; i++) {
+        struct icmp_echo req = {.type = 8, .id = htons(id), .seq = htons(i)};
+        for (size_t k = 0; k < sizeof req.payload; k++) req.payload[k] = 'a' + k % 26;
+        req.checksum = inet_checksum(&req, sizeof req);
+        unsigned long t0 = now_us();
+        long e = syscall6(SYS_sendto, sock, (long)&req, sizeof req, 0, (long)&to, sizeof to);
+        if (e < 0) { print_err("sendto", e); break; }
+        // 自分宛ての返事（type 0、同じ id と seq）が来るまで読む
+        for (;;) {
+            unsigned char buf[128];
+            long n = syscall6(SYS_recvfrom, sock, (long)buf, sizeof buf, 0, 0, 0);
+            if (n == -EAGAIN) { print("timeout seq="); print_u(i); print("\n"); break; }
+            if (n < 0) { print_err("recvfrom", n); break; }
+            size_t ihl = (buf[0] & 0x0f) * 4;  // IP ヘッダの長さ
+            if ((size_t)n < ihl + 8) continue;
+            struct icmp_echo *rep = (struct icmp_echo *)(buf + ihl);
+            if (rep->type != 0 || rep->id != htons(id) || rep->seq != htons(i)) continue;
+            unsigned long us = now_us() - t0;
+            print("reply from "); print_ip(dst); print(" seq="); print_u(i);
+            print(" time="); print_u(us / 1000); print("."); print_u_pad(us % 1000 / 100, 1); print(" ms\n");
+            received++;
+            break;
+        }
+    }
+    print_u(count); print(" sent, "); print_u(received); print(" received\n");
+    syscall3(SYS_close, sock, 0, 0);
+}
+
 static void cmd_shutdown(char *args) {
     (void)args;
     unmount_all();
@@ -281,6 +407,8 @@ static const struct {
     {"pwd",      cmd_pwd,      "print working directory"},
     {"df",       cmd_df,       "disk usage"},
     {"sync",     cmd_sync,     "flush writes to disk"},
+    {"ifconfig", cmd_ifconfig, "network interfaces"},
+    {"ping",     cmd_ping,     "ping <a.b.c.d> [count]"},
     {"echo",     cmd_echo,     "print arguments (cmd > file, >> to append)"},
     {"clear",    cmd_clear,    "clear the screen"},
     {"shutdown", cmd_shutdown, "power off (exit QEMU)"},
@@ -337,6 +465,7 @@ void _start(void) {
     print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
     banner();
     mount_all();
+    net_up();
     print("\n  Type 'help' for commands.\n\n");
 
     // 行編集（エコー、バックスペース）はカーネルの端末（canonical モード）に任せる
