@@ -333,6 +333,28 @@ def install_program_on_disk():
         os.unlink(disk)
 
 
+@test
+def ctrl_c_stops_program():
+    vm = booted()
+    try:
+        vm.send("spin\n")
+        vm.expect(r"spinning\.\.\. press Ctrl\+C")
+        vm.send("\x03")
+        vm.expect(r"\[signal 2\]")
+        vm.expect(PROMPT)
+        assert cmd(vm, "echo alive") == "alive"      # init は SIGINT で死なない
+        vm.send("\x03")                             # プロンプトで Ctrl+C しても何も起きない
+        assert cmd(vm, "echo still alive").endswith("still alive")
+        vm.send("spin\n")
+        vm.expect(r"spinning")
+        vm.send("\x1a")                             # Ctrl+Z は無効（止まった子を待ち続けないように）
+        vm.send("\x03")
+        vm.expect(r"\[signal 2\]")
+        vm.expect(PROMPT)
+    finally:
+        vm.kill()
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0

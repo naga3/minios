@@ -9,7 +9,10 @@ typedef unsigned long size_t;
 #define SYS_close      3
 #define SYS_stat       4
 #define SYS_lstat      6
+#define SYS_rt_sigaction 13
 #define SYS_ioctl      16
+#define SYS_pipe       22
+#define SYS_nanosleep  35
 #define SYS_dup        32
 #define SYS_dup2       33
 #define SYS_getpid     39
@@ -30,12 +33,15 @@ typedef unsigned long size_t;
 #define SYS_mount      165
 #define SYS_umount2    166
 #define SYS_reboot     169
+#define SYS_setpgid    109
 #define SYS_getppid    110
+#define SYS_setsid     112
 #define SYS_getdents64 217
 #define SYS_exit_group 231
 
 #define O_RDONLY    0
 #define O_WRONLY    01
+#define O_RDWR      02
 #define O_CREAT     0100
 #define O_TRUNC     01000
 #define O_APPEND    02000
@@ -70,6 +76,35 @@ static long syscall6(long n, long a, long b, long c, long d, long e, long f) {
     return ret;
 }
 #define syscall3(n, a, b, c) syscall6(n, (long)(a), (long)(b), (long)(c), 0, 0, 0)
+
+// ---- 端末 ----
+
+#define TCGETS     0x5401
+#define TCSETS     0x5402
+#define TIOCSCTTY  0x540E
+#define TIOCSPGRP  0x5410
+#define VSUSP      10
+
+struct termios {
+    unsigned int c_iflag, c_oflag, c_cflag, c_lflag;
+    unsigned char c_line;
+    unsigned char c_cc[19];
+};
+
+// ---- シグナル ----
+
+#define SIG_DFL 0
+#define SIG_IGN 1
+#define SIGTTOU 22
+
+struct kernel_sigaction {
+    unsigned long handler, flags, restorer, mask;
+};
+
+static long signal(int sig, unsigned long handler) {
+    struct kernel_sigaction sa = {.handler = handler};
+    return syscall6(SYS_rt_sigaction, sig, (long)&sa, 0, sizeof sa.mask, 0, 0);
+}
 
 // ---- 文字列 ----
 

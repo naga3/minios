@@ -2,7 +2,7 @@
 #include "lib.h"
 #include "net.h"
 
-#define VERSION "0.7"
+#define VERSION "0.8"
 
 static void banner(void) {
     struct utsname u;
@@ -477,15 +477,33 @@ static void spawn(char *cmd, char *args) {
     while (argc < 31 && (w = next_word(&args))) argv[argc++] = w;
     argv[argc] = 0;
 
+    // 子を端末の前面に立たせるのは親（init）の仕事。親が init のプロセスグループは「孤児」扱いで、
+    // 子が自分で TIOCSPGRP すると EIO になるため。切り替えが済むまで子をパイプで待たせる。
+    // 前面を取り戻すとき init は背景にいるので、SIGTTOU を無視しておく（setup_tty）
+    int sync_pipe[2];
+    long e = syscall3(SYS_pipe, sync_pipe, 0, 0);
+    if (e < 0) { print_err("pipe", e); return; }
     long pid = syscall3(SYS_fork, 0, 0, 0);
     if (pid < 0) { print_err("fork", pid); return; }
     if (pid == 0) {
-        long e = syscall3(SYS_execve, path, argv, child_env);
+        syscall3(SYS_setpgid, 0, 0, 0);  // 自分のプロセスグループを作る。Ctrl+C の SIGINT はこのグループに届く
+        syscall3(SYS_close, sync_pipe[1], 0, 0);
+        char c;
+        syscall3(SYS_read, sync_pipe[0], &c, 1);  // 親が閉じると 0 が返る
+        syscall3(SYS_close, sync_pipe[0], 0, 0);
+        signal(SIGTTOU, SIG_DFL);  // 無視の設定は exec を越えて引き継がれるので戻す
+        e = syscall3(SYS_execve, path, argv, child_env);
         print_err(path, e);
         syscall3(SYS_exit_group, 127, 0, 0);
     }
+    syscall3(SYS_setpgid, pid, pid, 0);  // 子と親のどちらが先に走っても同じ状態にする
+    syscall3(SYS_ioctl, 0, TIOCSPGRP, &pid);
+    syscall3(SYS_close, sync_pipe[0], 0, 0);
+    syscall3(SYS_close, sync_pipe[1], 0, 0);
     int status = 0;
     long r = syscall6(SYS_wait4, pid, (long)&status, 0, 0, 0, 0);
+    int self = 1;
+    syscall3(SYS_ioctl, 0, TIOCSPGRP, &self);  // 前面を init に戻す
     if (r < 0) { print_err("wait4", r); return; }
     if ((status & 0x7f) == 0) {
         int code = (status >> 8) & 0xff;
@@ -531,10 +549,31 @@ static void run(char *line) {
     syscall3(SYS_close, saved, 0, 0);
 }
 
+// init を新しいセッションのリーダーにし、端末を制御端末にする。
+// これで Ctrl+C が前面のプロセスグループへの SIGINT になる。
+// /dev/console は制御端末になれないので、実体の /dev/ttyS0 を開き直して fd 0〜2 にする（/dev のマウント後に呼ぶ）。
+// ジョブ制御は作らないので Ctrl+Z（SIGTSTP）は無効にする。止まった子を待ち続けてしまうため
+static void setup_tty(void) {
+    signal(SIGTTOU, SIG_IGN);
+    syscall3(SYS_setsid, 0, 0, 0);
+    long fd = syscall3(SYS_open, "/dev/ttyS0", O_RDWR, 0);
+    if (fd < 0) { status("Terminal /dev/ttyS0 (Ctrl+C disabled)", fd); return; }
+    for (int i = 0; i < 3; i++) syscall3(SYS_dup2, fd, i, 0);
+    if (fd > 2) syscall3(SYS_close, fd, 0, 0);
+    long e = syscall3(SYS_ioctl, 0, TIOCSCTTY, 0);
+    if (e < 0) status("Terminal /dev/ttyS0 (Ctrl+C disabled)", e);
+    struct termios t;
+    if (syscall3(SYS_ioctl, 0, TCGETS, &t) >= 0) {
+        t.c_cc[VSUSP] = 0;
+        syscall3(SYS_ioctl, 0, TCSETS, &t);
+    }
+}
+
 void _start(void) {
     print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
     banner();
     mount_all();
+    setup_tty();
     net_up();
     print("\n  Type 'help' for commands.\n\n");
 
@@ -543,7 +582,14 @@ void _start(void) {
     for (;;) {
         print("minios# ");
         long n = syscall3(SYS_read, 0, line, sizeof line - 1);
-        if (n <= 0) continue;
+        if (n < 0) {
+            // 端末が読めない（前面を取られたままなど）。プロンプトを連打しないよう 1 秒待つ
+            print_err("read", n);
+            struct { long sec, nsec; } t = {1, 0};
+            syscall3(SYS_nanosleep, &t, 0, 0);
+            continue;
+        }
+        if (n == 0) { print("\n"); continue; }  // Ctrl+D
         line[n] = 0;
         if (line[n - 1] == '\n') line[n - 1] = 0;
         run(line);
