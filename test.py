@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""minios を QEMU で起動し、シリアル越しに操作して挙動を確かめる。
+
+使い方: ./test.py            全テスト
+        ./test.py boot       名前に boot を含むテストだけ
+"""
+import os
+import re
+import select
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+ANSI = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
+
+
+class Timeout(Exception):
+    pass
+
+
+class VM:
+    def __init__(self, append="console=ttyS0 loglevel=0", extra=()):
+        self.p = subprocess.Popen(
+            ["qemu-system-x86_64", "-m", "64M",
+             "-kernel", f"{ROOT}/build/bzImage",
+             "-initrd", f"{ROOT}/build/initramfs.cpio",
+             "-append", append,
+             "-display", "none", "-serial", "stdio", "-monitor", "none", "-no-reboot",
+             *extra],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        self.buf = b""   # まだ expect で消費していない出力
+        self.log = b""   # 全出力
+
+    def _read(self, timeout):
+        r, _, _ = select.select([self.p.stdout], [], [], timeout)
+        if not r:
+            return False
+        chunk = os.read(self.p.stdout.fileno(), 4096)
+        if not chunk:
+            raise EOFError
+        self.buf += chunk
+        self.log += chunk
+        return True
+
+    def expect(self, pattern, timeout=15):
+        """pattern（正規表現、ANSI エスケープ除去後）が出るまで待ち、それまでの出力を返す"""
+        rx = re.compile(pattern.encode() if isinstance(pattern, str) else pattern)
+        deadline = time.time() + timeout
+        while True:
+            clean = ANSI.sub(b"", self.buf)
+            m = rx.search(clean)
+            if m:
+                self.buf = clean[m.end():]
+                return clean[:m.end()].decode(errors="replace")
+            left = deadline - time.time()
+            if left <= 0:
+                raise Timeout(f"expect {pattern!r} timed out")
+            try:
+                self._read(left)
+            except EOFError:
+                raise Timeout(f"expect {pattern!r}: VM exited")
+
+    def send(self, s):
+        self.p.stdin.write(s.encode())
+        self.p.stdin.flush()
+
+    def wait_exit(self, timeout=15):
+        deadline = time.time() + timeout
+        while self.p.poll() is None and time.time() < deadline:
+            try:
+                self._read(0.1)
+            except EOFError:
+                break
+        return self.p.wait(max(0.1, deadline - time.time()))
+
+    def kill(self):
+        if self.p.poll() is None:
+            self.p.kill()
+            self.p.wait()
+
+
+TESTS = []
+
+
+def test(fn):
+    TESTS.append(fn)
+    return fn
+
+
+# ---- テスト ----
+
+@test
+def boot_banner_and_shutdown():
+    vm = VM()
+    try:
+        vm.expect(r"minios")
+        vm.expect(r"kernel: Linux \S+ x86_64")
+        vm.expect(r"Press any key")
+        vm.send("x")
+        vm.expect(r"Bye\.")
+        assert vm.wait_exit() == 0
+    finally:
+        vm.kill()
+
+
+def main():
+    only = sys.argv[1] if len(sys.argv) > 1 else ""
+    failed = 0
+    for fn in TESTS:
+        if only not in fn.__name__:
+            continue
+        t0 = time.time()
+        try:
+            fn()
+            print(f"PASS {fn.__name__} ({time.time() - t0:.1f}s)")
+        except Exception as e:
+            failed += 1
+            print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
+    sizes = {f: os.path.getsize(f"{ROOT}/build/{f}") for f in ("bzImage", "init", "initramfs.cpio")}
+    print("SIZE " + " ".join(f"{k}={v}" for k, v in sizes.items()))
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()

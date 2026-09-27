@@ -1,0 +1,8 @@
+# tinyconfig に足すカーネルオプション。1 行 1 つ。理由をコメントで残す
+64BIT                 # x86_64 で動かす
+PRINTK                # カーネルのメッセージ出力
+TTY                   # 端末
+SERIAL_8250           # シリアルポート(ttyS0)のドライバ
+SERIAL_8250_CONSOLE   # シリアルポートをコンソールにする
+BLK_DEV_INITRD        # initramfs を読む
+BINFMT_ELF            # ELF 実行ファイルを起動する
