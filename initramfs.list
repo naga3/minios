@@ -25,3 +25,19 @@ file /licenses/Linux-GPL-2.0 build/licenses/Linux-GPL-2.0 0644 0 0
 file /licenses/Linux-syscall-note build/licenses/Linux-syscall-note 0644 0 0
 file /licenses/Go-BSD-3-Clause build/licenses/Go-BSD-3-Clause 0644 0 0
 file /licenses/ca-certificates-MPL-2.0 build/licenses/ca-certificates-MPL-2.0 0644 0 0
+file /licenses/TinyCC-LGPL-2.1 build/licenses/TinyCC-LGPL-2.1 0644 0 0
+file /bin/tcc build/tcc/tcc 0755 0 0
+file /bin/cc build/bin/cc 0755 0 0
+dir /usr 0755 0 0
+dir /usr/lib 0755 0 0
+dir /usr/lib/tcc 0755 0 0
+file /usr/lib/tcc/libtcc1.a build/tcc/libtcc1.a 0644 0 0
+dir /usr/include 0755 0 0
+dir /usr/include/minios 0755 0 0
+file /usr/include/minios/crt.h crt.h 0644 0 0
+file /usr/include/minios/lib.h lib.h 0644 0 0
+file /usr/include/minios/net.h net.h 0644 0 0
+dir /usr/share 0755 0 0
+dir /usr/share/minios 0755 0 0
+dir /usr/share/minios/examples 0755 0 0
+file /usr/share/minios/examples/hello.c examples/hello.c 0644 0 0

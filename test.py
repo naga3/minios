@@ -12,6 +12,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+# KVM が使えれば使う（ローカル LLM を動かすには必須）。使えなければソフトウェアエミュレーション
+ACCEL = ("-accel", "kvm", "-cpu", "host") if os.access("/dev/kvm", os.R_OK | os.W_OK) else ("-accel", "tcg")
 ANSI = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -56,7 +58,7 @@ class VM:
             boot = ("-m", "64M", "-kernel", f"{ROOT}/build/bzImage", "-initrd", f"{ROOT}/build/initramfs.cpio",
                     "-append", append, "-no-reboot")
         self.p = subprocess.Popen(
-            ["qemu-system-x86_64", *boot, "-display", "none", "-serial", "stdio",
+            ["qemu-system-x86_64", *ACCEL, *boot, "-display", "none", "-serial", "stdio",
              "-monitor", f"unix:{self.mon_path},server,nowait", *extra],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         self.buf = b""   # まだ expect で消費していない出力
@@ -240,7 +242,7 @@ def files_and_redirect():
         assert "init" in cmd(vm, "ls /")
         assert re.search(r"^c +0  console$", cmd(vm, "ls /dev"), re.M)
         out = cmd(vm, "ls /licenses")  # 同梱した部品のライセンス（NOTICE.md）
-        for name in ("NOTICE.md", "Linux-GPL-2.0", "Go-BSD-3-Clause", "ca-certificates-MPL-2.0"):
+        for name in ("NOTICE.md", "Linux-GPL-2.0", "Go-BSD-3-Clause", "ca-certificates-MPL-2.0", "TinyCC-LGPL-2.1"):
             assert name in out, out
     finally:
         vm.kill()
@@ -495,6 +497,33 @@ class HostHTTPServer:
     def __exit__(self, *exc):
         self.httpd.shutdown()
         self.dir.cleanup()
+
+
+@test
+def compile_inside():
+    """OS の中の TinyCC（cc）で C をコンパイルし、/data/bin に置いて使う。再起動後も残る"""
+    disk = new_disk()
+    try:
+        vm = booted(disk)
+        try:
+            assert cmd(vm, "mkdir /data/bin") == ""
+            assert cmd(vm, "cc -o /data/bin/hello2 /usr/share/minios/examples/hello.c") == ""
+            assert cmd(vm, "hello2 a b") == "hello, compiled inside minios a b"
+            out = cmd(vm, "cc -o /x /nosuch.c")
+            assert out == "tcc: error: file '/nosuch.c' not found\n[exit 1]", out
+            out = cmd(vm, "ls /usr/include/minios")
+            assert all(h in out for h in ("crt.h", "lib.h", "net.h")), out
+            vm.send("shutdown\n")
+            assert vm.wait_exit() == 0
+        finally:
+            vm.kill()
+        vm = booted(disk)
+        try:
+            assert cmd(vm, "hello2 again") == "hello, compiled inside minios again"
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
 
 
 @test

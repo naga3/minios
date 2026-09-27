@@ -9,7 +9,10 @@ cd "$(dirname "$0")"
 [ -f build/ovmf_vars.fd ] || cp /usr/share/OVMF/OVMF_VARS_4M.fd build/ovmf_vars.fd
 display="-display none"
 [ "$1" = gui ] && display="-display gtk -device qemu-xhci -device usb-kbd"
-exec qemu-system-x86_64 -m 256M \
+# KVM が使えれば使う。使えなければソフトウェアエミュレーション
+accel="-accel tcg"
+[ -r /dev/kvm ] && [ -w /dev/kvm ] && accel="-accel kvm -cpu host"
+exec qemu-system-x86_64 $accel -m 256M \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,file=build/ovmf_vars.fd \
     -drive file=fat:rw:build/efi,format=raw \

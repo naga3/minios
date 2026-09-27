@@ -3,7 +3,10 @@
 set -e
 cd "$(dirname "$0")"
 ./build.sh
-exec qemu-system-x86_64 -m 64M \
+# KVM が使えれば使う。使えなければソフトウェアエミュレーション
+accel="-accel tcg"
+[ -r /dev/kvm ] && [ -w /dev/kvm ] && accel="-accel kvm -cpu host"
+exec qemu-system-x86_64 $accel -m 64M \
     -kernel build/bzImage \
     -initrd build/initramfs.cpio \
     -append "console=ttyS0 loglevel=0" \

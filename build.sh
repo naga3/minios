@@ -44,6 +44,14 @@ done
 # CA 証明書（HTTPS の検証用）。ホストの束をそのまま使う
 cp /etc/ssl/certs/ca-certificates.crt build/ca-certificates.crt
 
+# TinyCC（OS の中の C コンパイラ）。third_party/tinycc は fetch-third-party.sh で取ってくる
+if [ ! -x build/tcc/tcc ]; then
+    rm -rf build/tcc && mkdir -p build/tcc
+    (cd build/tcc && ../../third_party/tinycc/configure --prefix=/usr --extra-ldflags=-static \
+        --config-bcheck=no --config-backtrace=no >/dev/null && make -s -j"$(nproc)" tcc libtcc1.a >/dev/null)
+    strip build/tcc/tcc
+fi
+
 # 同梱する部品のライセンス（NOTICE.md を参照）
 mkdir -p build/licenses
 cp NOTICE.md build/licenses/NOTICE.md
@@ -51,6 +59,7 @@ cp $KSRC/LICENSES/preferred/GPL-2.0 build/licenses/Linux-GPL-2.0
 cp $KSRC/LICENSES/exceptions/Linux-syscall-note build/licenses/Linux-syscall-note
 cp "$(go env GOROOT)/LICENSE" build/licenses/Go-BSD-3-Clause
 cp /usr/share/common-licenses/MPL-2.0 build/licenses/ca-certificates-MPL-2.0
+cp third_party/tinycc/COPYING build/licenses/TinyCC-LGPL-2.1
 
 # initramfs
 make -C $KSRC O=$KOUT -s usr/gen_init_cpio
