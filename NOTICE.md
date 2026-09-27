@@ -1,0 +1,25 @@
+# NOTICE
+
+minios のバイナリ（build.sh が作る bzImage と initramfs、build-efi.sh が作る BOOTX64.EFI）には、次のものが入っている。
+ライセンスの本文は、OS の中の /licenses にも同梱している。
+
+| 部品 | 入っている場所 | ライセンス | 出どころ |
+|---|---|---|---|
+| Linux カーネル 7.2.8 | bzImage、BOOTX64.EFI | GPL-2.0（Linux-syscall-note 付き） | https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.8.tar.xz |
+| Go の標準ライブラリとランタイム（go1.26.4） | /bin/gobox | BSD-3-Clause（Copyright The Go Authors） | https://go.dev/ |
+| CA 証明書の束（Mozilla の certdata.txt から作られたもの） | /etc/ssl/certs/ca-certificates.crt | MPL-2.0（Copyright Mozilla Contributors） | ビルドしたホストの Ubuntu の ca-certificates パッケージ |
+| minios 自身のコード（init、シェル、progs、gobox のコード、ビルド・テストのスクリプト） | /init、/bin | 未定 | このリポジトリ |
+
+## Linux カーネルのソース（GPL-2.0 の義務）
+
+BOOTX64.EFI や bzImage を配るときは、対応するソースを受け取れるようにする必要がある。
+対応するソースは、上の kernel.org の tarball（改変なし）と、このリポジトリの次のファイルで全部になる。
+
+- kernel.fragment、kernel-efi.fragment（tinyconfig に足す・削る設定）
+- build.sh、build-efi.sh、check-config.sh、kbuild-env.sh（設定の作り方とビルドの手順）
+- initramfs.list（BOOTX64.EFI に埋め込む initramfs の中身）
+
+## ビルドにだけ使うもの（配布物には入らない）
+
+- GCC、binutils、Go のツールチェイン
+- QEMU、OVMF（テストで起動するときだけ）

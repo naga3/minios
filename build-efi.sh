@@ -3,6 +3,7 @@
 # カーネルに initramfs と起動オプションを埋め込む。FAT のディスク（USB など）にこのファイルを置けば起動する
 set -e
 cd "$(dirname "$0")"
+. ./kbuild-env.sh
 ./build.sh
 KSRC=linux-7.2.8
 KOUT=$PWD/build/kernel-efi

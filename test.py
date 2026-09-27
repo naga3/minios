@@ -239,6 +239,9 @@ def files_and_redirect():
         assert cmd(vm, "rm /tmp") == ""
         assert "init" in cmd(vm, "ls /")
         assert re.search(r"^c +0  console$", cmd(vm, "ls /dev"), re.M)
+        out = cmd(vm, "ls /licenses")  # 同梱した部品のライセンス（NOTICE.md）
+        for name in ("NOTICE.md", "Linux-GPL-2.0", "Go-BSD-3-Clause", "ca-certificates-MPL-2.0"):
+            assert name in out, out
     finally:
         vm.kill()
 
@@ -704,6 +707,17 @@ def efi_boot():
             vm.kill()
     finally:
         os.unlink(disk)
+
+
+@test
+def fuzz_dhcp():
+    """DHCP の応答の解析（dhcp_find）を、ホストで AddressSanitizer・UBSan つきでファジングする"""
+    out = subprocess.run(["gcc", "-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
+                          "-Wno-unused-function", "-o", f"{ROOT}/build/fuzz_dhcp", f"{ROOT}/tools/fuzz_dhcp.c"],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    out = subprocess.run([f"{ROOT}/build/fuzz_dhcp"], capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0 and "no errors" in out.stdout, out.stdout + out.stderr
 
 
 @test

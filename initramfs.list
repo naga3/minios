@@ -19,3 +19,9 @@ file /bin/orphan build/bin/orphan 0755 0 0
 file /bin/screen build/bin/screen 0755 0 0
 dir /boot 0755 0 0
 file /bin/grep build/bin/grep 0755 0 0
+dir /licenses 0755 0 0
+file /licenses/NOTICE.md build/licenses/NOTICE.md 0644 0 0
+file /licenses/Linux-GPL-2.0 build/licenses/Linux-GPL-2.0 0644 0 0
+file /licenses/Linux-syscall-note build/licenses/Linux-syscall-note 0644 0 0
+file /licenses/Go-BSD-3-Clause build/licenses/Go-BSD-3-Clause 0644 0 0
+file /licenses/ca-certificates-MPL-2.0 build/licenses/ca-certificates-MPL-2.0 0644 0 0

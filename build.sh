@@ -2,6 +2,7 @@
 # カーネル・init・initramfs をビルドして build/ に置く
 set -e
 cd "$(dirname "$0")"
+. ./kbuild-env.sh
 KSRC=linux-7.2.8
 KOUT=$PWD/build/kernel   # ソースツリーを汚さないよう、カーネルのビルド結果は build/kernel に置く
 mkdir -p build
@@ -42,6 +43,14 @@ done
 
 # CA 証明書（HTTPS の検証用）。ホストの束をそのまま使う
 cp /etc/ssl/certs/ca-certificates.crt build/ca-certificates.crt
+
+# 同梱する部品のライセンス（NOTICE.md を参照）
+mkdir -p build/licenses
+cp NOTICE.md build/licenses/NOTICE.md
+cp $KSRC/LICENSES/preferred/GPL-2.0 build/licenses/Linux-GPL-2.0
+cp $KSRC/LICENSES/exceptions/Linux-syscall-note build/licenses/Linux-syscall-note
+cp "$(go env GOROOT)/LICENSE" build/licenses/Go-BSD-3-Clause
+cp /usr/share/common-licenses/MPL-2.0 build/licenses/ca-certificates-MPL-2.0
 
 # initramfs
 make -C $KSRC O=$KOUT -s usr/gen_init_cpio
