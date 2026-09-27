@@ -90,16 +90,51 @@ def test(fn):
 
 # ---- テスト ----
 
-@test
-def boot_banner_and_shutdown():
+PROMPT = r"minios# "
+
+
+def booted():
+    """起動してプロンプトが出た VM を返す"""
     vm = VM()
+    vm.expect(r"kernel: Linux \S+ x86_64")
+    vm.expect(PROMPT)
+    return vm
+
+
+def cmd(vm, line, timeout=15):
+    """1 行送り、次のプロンプトまでの出力（エコーした行を除く）を返す"""
+    vm.send(line + "\n")
+    out = vm.expect(PROMPT, timeout)
+    out = out.replace("\r\n", "\n")
+    lines = out.split("\n")
+    return "\n".join(lines[1:-1])  # 先頭はエコー、末尾はプロンプト
+
+
+@test
+def boot_and_shutdown():
+    vm = booted()
     try:
-        vm.expect(r"minios")
-        vm.expect(r"kernel: Linux \S+ x86_64")
-        vm.expect(r"Press any key")
-        vm.send("x")
+        vm.send("shutdown\n")
         vm.expect(r"Bye\.")
         assert vm.wait_exit() == 0
+    finally:
+        vm.kill()
+
+
+@test
+def basic_commands():
+    vm = booted()
+    try:
+        out = cmd(vm, "help")
+        for name in ("help", "uname", "uptime", "mem", "echo", "clear", "shutdown"):
+            assert name in out, (name, out)
+        assert cmd(vm, "uname").startswith("Linux 7.2.8 "), "uname"
+        assert re.fullmatch(r"up \d+s", cmd(vm, "uptime")), "uptime"
+        out = cmd(vm, "mem")
+        assert re.search(r"total +\d+ KiB", out) and re.search(r"free +\d+ KiB", out), out
+        assert cmd(vm, "echo  hello   world ") == "hello world", "echo"
+        assert cmd(vm, "") == "", "empty line"
+        assert cmd(vm, "nosuch x") == "nosuch: command not found"
     finally:
         vm.kill()
 

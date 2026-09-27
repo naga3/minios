@@ -1,60 +1,113 @@
-// PID 1. libc なし、システムコール直叩き。
-#define SYS_read   0
-#define SYS_write  1
-#define SYS_ioctl  16
-#define SYS_uname  63
-#define SYS_reboot 169
+// minios の PID 1。起動メッセージを出し、コマンドを受け付ける
+#include "lib.h"
 
-#define TCGETS 0x5401
-#define TCSETS 0x5402
-#define ICANON 0000002
-#define ECHO   0000010
+#define VERSION "0.2"
 
-struct termios {
-    unsigned int c_iflag, c_oflag, c_cflag, c_lflag;
-    unsigned char c_line;
-    unsigned char c_cc[19];
-};
-
-struct utsname {
-    char sysname[65], nodename[65], release[65], version[65], machine[65], domainname[65];
-};
-
-static long syscall4(long n, long a, long b, long c, long d) {
-    long ret;
-    register long r10 asm("r10") = d;
-    asm volatile("syscall" : "=a"(ret) : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10) : "rcx", "r11", "memory");
-    return ret;
+static void banner(void) {
+    struct utsname u;
+    syscall3(SYS_uname, &u, 0, 0);
+    print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
+    print("\n  \033[1;32mminios\033[0m " VERSION "\n");
+    print("  kernel: "); print(u.sysname); print(" "); print(u.release); print(" "); print(u.machine); print("\n\n");
+    print("  Type 'help' for commands.\n\n");
 }
 
-static void print(const char *s) {
-    long n = 0;
-    while (s[n]) n++;
-    syscall4(SYS_write, 1, (long)s, n, 0);
+// ---- コマンド ----
+
+static void cmd_help(char *args);
+
+static void cmd_uname(char *args) {
+    (void)args;
+    struct utsname u;
+    syscall3(SYS_uname, &u, 0, 0);
+    print(u.sysname); print(" "); print(u.release); print(" "); print(u.version); print(" "); print(u.machine); print("\n");
+}
+
+static void cmd_uptime(char *args) {
+    (void)args;
+    struct sysinfo si;
+    syscall3(SYS_sysinfo, &si, 0, 0);
+    print("up "); print_u(si.uptime); print("s\n");
+}
+
+static void cmd_mem(char *args) {
+    (void)args;
+    struct sysinfo si;
+    syscall3(SYS_sysinfo, &si, 0, 0);
+    unsigned long unit = si.mem_unit ? si.mem_unit : 1;
+    print("total "); print_u_pad(si.totalram * unit / 1024, 8); print(" KiB\n");
+    print("free  "); print_u_pad(si.freeram * unit / 1024, 8); print(" KiB\n");
+}
+
+static void cmd_echo(char *args) {
+    char *w;
+    int first = 1;
+    while ((w = next_word(&args))) {
+        if (!first) print(" ");
+        print(w);
+        first = 0;
+    }
+    print("\n");
+}
+
+static void cmd_clear(char *args) {
+    (void)args;
+    print("\033[2J\033[H");
+}
+
+static void cmd_shutdown(char *args) {
+    (void)args;
+    print("Bye.\n");
+    restart();
+}
+
+static const struct {
+    const char *name;
+    void (*fn)(char *args);
+    const char *help;
+} commands[] = {
+    {"help",     cmd_help,     "show this help"},
+    {"uname",    cmd_uname,    "kernel name and version"},
+    {"uptime",   cmd_uptime,   "seconds since boot"},
+    {"mem",      cmd_mem,      "memory usage"},
+    {"echo",     cmd_echo,     "print arguments"},
+    {"clear",    cmd_clear,    "clear the screen"},
+    {"shutdown", cmd_shutdown, "power off (exit QEMU)"},
+};
+#define NCOMMANDS (sizeof commands / sizeof commands[0])
+
+static void cmd_help(char *args) {
+    (void)args;
+    for (size_t i = 0; i < NCOMMANDS; i++) {
+        print("  "); print(commands[i].name);
+        for (size_t n = slen(commands[i].name); n < 10; n++) print(" ");
+        print(commands[i].help); print("\n");
+    }
+}
+
+static void run(char *line) {
+    char *cmd = next_word(&line);
+    if (!cmd) return;
+    for (size_t i = 0; i < NCOMMANDS; i++) {
+        if (seq(cmd, commands[i].name)) {
+            commands[i].fn(line);
+            return;
+        }
+    }
+    print(cmd); print(": command not found\n");
 }
 
 void _start(void) {
-    struct utsname u;
-    syscall4(SYS_uname, (long)&u, 0, 0, 0);
+    banner();
 
-    print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
-    print("\n  \033[1;32mminios\033[0m 0.1\n");
-    print("  kernel: "); print(u.sysname); print(" "); print(u.release); print(" "); print(u.machine); print("\n\n");
-    print("  [ \033[32mOK\033[0m ] Started PID 1\n");
-    print("  [ \033[32mOK\033[0m ] Reached target minimal\n\n");
-    print("  Press any key to shut down...");
-
-    // raw モード：Enter を待たず 1 文字で read が返るようにし、エコーも止める
-    struct termios t;
-    syscall4(SYS_ioctl, 0, TCGETS, (long)&t, 0);
-    t.c_lflag &= ~(ICANON | ECHO);
-    syscall4(SYS_ioctl, 0, TCSETS, (long)&t, 0);
-
-    char c;
-    syscall4(SYS_read, 0, (long)&c, 1, 0);
-    print("\n\n  Bye.\n\n");
-
-    // LINUX_REBOOT_CMD_RESTART。ACPI が無いので電源断はできない。QEMU の -no-reboot で終了させる
-    syscall4(SYS_reboot, 0xfee1dead, 672274793, 0x01234567, 0);
-    for (;;) {}
+    // 行編集（エコー、バックスペース）はカーネルの端末（canonical モード）に任せる
+    char line[256];
+    for (;;) {
+        print("minios# ");
+        long n = syscall3(SYS_read, 0, line, sizeof line - 1);
+        if (n <= 0) continue;
+        line[n] = 0;
+        if (line[n - 1] == '\n') line[n - 1] = 0;
+        run(line);
+    }
 }
