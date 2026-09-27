@@ -14,7 +14,7 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 ./run.sh            # QEMU で起動（シリアル）。Ctrl+C はゲストに届く。QEMU を強制終了するには Ctrl+A → X
 ./run-efi.sh        # UEFI 版を実機と同じ経路（UEFI → FAT 上の BOOTX64.EFI）で起動
 ./run-efi.sh gui    # 画面のウィンドウも開き、USB キーボードで操作する（WSL なら WSLg）
-./test.py           # 自動テスト（26 個）。UEFI 版のテストは ./build-efi.sh の後だけ動く
+./test.py           # 自動テスト（27 個）。UEFI 版のテストは ./build-efi.sh の後だけ動く
 MINIOS_INTERNET=1 ./test.py internet   # インターネットに出るテスト（DNS、HTTPS）
 ```
 
@@ -46,6 +46,8 @@ minios# shutdown
 | kbuild-env.sh | カーネルに埋め込まれるビルドした人・マシン・日時を固定する（個人の情報を残さない） |
 | NOTICE.md | 同梱している部品とライセンス。本文は OS の中の /licenses にもある |
 | fetch-third-party.sh | サードパーティ（TinyCC など）を決まった版で third_party/ に取ってくる（最初に 1 回） |
+| build-models.sh | モデル用のディスク build/models.img（ext4、/models）を作る |
+| fragment-args.awk | kernel.fragment を scripts/config の引数にする（NAME、!NAME、NAME=VALUE） |
 | examples/ | OS の中でコンパイルするお手本（/usr/share/minios/examples） |
 | tools/fuzz_dhcp.c | DHCP の応答の解析を AddressSanitizer つきでファジングする（test.py から実行） |
 | test.py | QEMU をシリアル越しに操作する自動テスト |

@@ -123,6 +123,12 @@ static int seq(const char *a, const char *b) {
     return *a == *b;
 }
 
+// buf（大きさ size、今 *n 文字）の後ろに s をつなげて NUL 終端する。入りきらない分は捨てる
+static void str_append(char *buf, size_t size, size_t *n, const char *s) {
+    while (*s && *n < size - 1) buf[(*n)++] = *s++;
+    buf[*n] = 0;
+}
+
 // 先頭の空白を飛ばし、次の空白で NUL 終端して単語を切り出す。*s は単語の次へ進む
 static char *next_word(char **s) {
     char *p = *s;

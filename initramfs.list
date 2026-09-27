@@ -41,3 +41,7 @@ dir /usr/share 0755 0 0
 dir /usr/share/minios 0755 0 0
 dir /usr/share/minios/examples 0755 0 0
 file /usr/share/minios/examples/hello.c examples/hello.c 0644 0 0
+dir /models 0755 0 0
+file /bin/llama-completion build/llama/llama-completion 0755 0 0
+file /licenses/llama.cpp-MIT build/licenses/llama.cpp-MIT 0644 0 0
+file /licenses/cpp-httplib-MIT build/licenses/cpp-httplib-MIT 0644 0 0

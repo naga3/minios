@@ -11,10 +11,11 @@ KOUT=$PWD/build/kernel-efi
 # kernel.fragment のうち kernel-efi.fragment で指定し直すものを除き、kernel-efi.fragment を足す
 efi_opts=$(sed 's/#.*//' kernel-efi.fragment | awk 'NF {print $1}')
 sed 's/#.*//' kernel.fragment | awk 'NF {print $1}' | while read -r opt; do
-    echo "$efi_opts" | grep -qx "${opt#!}" || echo "$opt"
+    name=${opt#!}
+    echo "$efi_opts" | grep -qx "${name%%=*}" || echo "$opt"
 done > build/fragment-efi.merged
 echo "$efi_opts" >> build/fragment-efi.merged
-args=$(awk 'NF { if ($1 ~ /^!/) printf "-d %s ", substr($1, 2); else printf "-e %s ", $1 }' build/fragment-efi.merged)
+args=$(awk -f fragment-args.awk build/fragment-efi.merged)
 
 make -C $KSRC O=$KOUT -s tinyconfig
 # console は最後に書いたものが /dev/console（init の出力先）になる。起動ログはシリアルと画面の両方に出る

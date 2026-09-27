@@ -25,7 +25,8 @@ static long mount(const char *src, const char *dir, const char *type) {
     return syscall6(SYS_mount, (long)src, (long)dir, (long)type, 0, 0, 0);
 }
 
-#define MS_BIND 4096
+#define MS_RDONLY 1
+#define MS_BIND   4096
 
 struct block_list { char names[16][32]; int n; };
 
@@ -60,16 +61,34 @@ static long mount_boot_media(char *dev, size_t size) {
     return -2;
 }
 
-// 起動時のマウント。/data は永続ディスク（/dev/vda、minix）。無ければメモリだけで動く
+// 起動時のマウント。/data は永続ディスク（virtio の minix か、UEFI で起動した USB メモリの FAT）。無ければメモリだけで動く
 static void mount_all(void) {
     status("Mounted /proc", mount("proc", "/proc", "proc"));
     status("Mounted /sys", mount("sysfs", "/sys", "sysfs"));
     status("Mounted /dev", mount("devtmpfs", "/dev", "devtmpfs"));
+    // virtio ディスクを順に調べる。minix なら永続ディスク（/data）、ext4 ならモデル用のディスク（/models、読み取り専用）
     struct stat st;
-    if (syscall3(SYS_stat, "/dev/vda", &st, 0) >= 0) {
-        status("Mounted /data (/dev/vda)", mount("/dev/vda", "/data", "minix"));
-        return;
+    int data = 0;
+    for (char c = 'a'; c <= 'd'; c++) {
+        char dev[] = "/dev/vdX", what[64];
+        size_t n = 0;
+        dev[7] = c;
+        if (syscall3(SYS_stat, dev, &st, 0) < 0) break;
+        if (!data && mount(dev, "/data", "minix") >= 0) {
+            data = 1;
+            str_append(what, sizeof what, &n, "Mounted /data (");
+            str_append(what, sizeof what, &n, dev);
+            str_append(what, sizeof what, &n, ")");
+            status(what, 0);
+            continue;
+        }
+        long e = syscall6(SYS_mount, (long)dev, (long)"/models", (long)"ext4", MS_RDONLY, 0, 0);
+        str_append(what, sizeof what, &n, e >= 0 ? "Mounted /models (" : "Unknown disk (");
+        str_append(what, sizeof what, &n, dev);
+        str_append(what, sizeof what, &n, e >= 0 ? ", read-only)" : ")");
+        status(what, e);
     }
+    if (data) return;
     // UEFI で起動していれば、起動した USB メモリなどの FAT に minios-data を作って /data にする
     if (syscall3(SYS_stat, "/sys/firmware/efi", &st, 0) >= 0) {
         char dev[64];

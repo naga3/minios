@@ -7,8 +7,8 @@ KSRC=linux-7.2.8
 KOUT=$PWD/build/kernel   # ソースツリーを汚さないよう、カーネルのビルド結果は build/kernel に置く
 mkdir -p build
 
-# カーネル: tinyconfig + kernel.fragment（"!NAME" は無効化）。設定が変わったときだけビルドし直す
-sed 's/#.*//' kernel.fragment | awk 'NF { if ($1 ~ /^!/) printf "-d %s ", substr($1, 2); else printf "-e %s ", $1 } END {print ""}' > build/fragment.args
+# カーネル: tinyconfig + kernel.fragment（"!NAME" は無効化、"NAME=VALUE" は値の設定）。設定が変わったときだけビルドし直す
+sed 's/#.*//' kernel.fragment | awk -f fragment-args.awk > build/fragment.args
 if ! cmp -s build/fragment.args build/fragment.args.built || [ ! -f build/bzImage ]; then
     make -C $KSRC O=$KOUT -s tinyconfig
     $KSRC/scripts/config --file $KOUT/.config $(cat build/fragment.args)
@@ -52,6 +52,16 @@ if [ ! -x build/tcc/tcc ]; then
     strip build/tcc/tcc
 fi
 
+# llama.cpp（OS の中のローカル LLM）。静的リンク、OpenMP なし、CPU の命令は AVX2 まで（2013 年以降のほぼすべての PC で動く）
+if [ ! -x build/llama/llama-completion ]; then
+    third_party/cmake/bin/cmake -S third_party/llama.cpp -B build/llama -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF -DGGML_STATIC=ON -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON \
+        -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_OPENMP=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DCMAKE_EXE_LINKER_FLAGS=-static >/dev/null
+    third_party/cmake/bin/cmake --build build/llama --target llama-completion -j"$(nproc)" >/dev/null 2>&1
+    strip -o build/llama/llama-completion build/llama/bin/llama-completion
+fi
+
 # 同梱する部品のライセンス（NOTICE.md を参照）
 mkdir -p build/licenses
 cp NOTICE.md build/licenses/NOTICE.md
@@ -60,6 +70,8 @@ cp $KSRC/LICENSES/exceptions/Linux-syscall-note build/licenses/Linux-syscall-not
 cp "$(go env GOROOT)/LICENSE" build/licenses/Go-BSD-3-Clause
 cp /usr/share/common-licenses/MPL-2.0 build/licenses/ca-certificates-MPL-2.0
 cp third_party/tinycc/COPYING build/licenses/TinyCC-LGPL-2.1
+cp third_party/llama.cpp/LICENSE build/licenses/llama.cpp-MIT
+cp third_party/llama.cpp/vendor/cpp-httplib/LICENSE build/licenses/cpp-httplib-MIT
 
 # initramfs
 make -C $KSRC O=$KOUT -s usr/gen_init_cpio

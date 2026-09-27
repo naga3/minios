@@ -23,7 +23,11 @@ class Timeout(Exception):
 
 class VM:
     def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, efi=False, usb_kbd=False,
-                 esp=None, esp_on_usb=False, nic_model="virtio-net-pci", extra=()):
+                 esp=None, esp_on_usb=False, nic_model="virtio-net-pci", models=False, extra=()):
+        if models:
+            # ローカル LLM: モデル用のディスク（読み取り専用）と、推論のためのメモリと CPU
+            extra = ("-drive", f"file={ROOT}/build/models.img,format=raw,if=virtio,readonly=on",
+                     "-m", "3G", "-smp", "8", *extra)
         if disk:
             extra = ("-drive", f"file={disk},format=raw,if=virtio", *extra)
         extra = ("-nic", f"user,model={nic_model}" if net else "none", *extra)
@@ -150,9 +154,9 @@ def test(fn):
 PROMPT = r"(?m)^minios# "  # 行頭だけ。画面の中身（screen の出力）に含まれる "minios# " と取り違えないように
 
 
-def booted(disk=None, net=False):
+def booted(disk=None, net=False, models=False):
     """起動してプロンプトが出た VM を返す"""
-    vm = VM(disk=disk, net=net)
+    vm = VM(disk=disk, net=net, models=models)
     vm.expect(r"kernel: Linux \S+ x86_64")
     vm.expect(PROMPT)
     return vm
@@ -524,6 +528,25 @@ def compile_inside():
             vm.kill()
     finally:
         os.unlink(disk)
+
+
+@test
+def local_llm():
+    """OS の中でローカル LLM（llama.cpp + Qwen2.5-Coder-1.5B）が、全部の CPU を使って動く"""
+    vm = VM(models=True)
+    try:
+        vm.expect(r"\[ OK \] Mounted /models \(/dev/vda, read-only\)")
+        vm.expect(PROMPT)
+        assert cmd(vm, "cat /sys/devices/system/cpu/online") == "0-7"  # ACPI（MADT）で 8 個とも見える
+        out = cmd(vm, "llama-completion -m /models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf -p Say_hello "
+                      "-st --simple-io --temp 0 -n 16 -t 8 --no-display-prompt", timeout=120)
+        m = re.search(r"eval time = .* ([\d.]+) tokens per second\)", out)
+        assert m, out[-1000:]
+        speed = float(m.group(1))
+        print(f"  ({speed:.0f} tokens/s)")
+        assert speed > 5, out[-1000:]  # CPU が 1 つしか見えないと 0.05 程度になる（周 23 で踏んだ）
+    finally:
+        vm.kill()
 
 
 @test
