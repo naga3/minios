@@ -373,12 +373,15 @@ def go_program():
 
 
 class HostHTTPServer:
-    """ホストの 127.0.0.1 に HTTP サーバーを立てる。ゲストからは 10.0.2.2:<port> で見える"""
+    """ホストの 127.0.0.1 に HTTP サーバーを立てる。ゲストからは 10.0.2.2:<port> で見える。
+    index.html と、配布用のプログラム（build/bin/hello を bin/hello として）を置く"""
     def __enter__(self):
-        import http.server, tempfile, threading, functools
+        import http.server, tempfile, threading, functools, shutil
         self.dir = tempfile.TemporaryDirectory()
         with open(os.path.join(self.dir.name, "index.html"), "w") as f:
             f.write("hello from host\n")
+        os.mkdir(os.path.join(self.dir.name, "bin"))
+        shutil.copy(f"{ROOT}/build/bin/hello", os.path.join(self.dir.name, "bin", "hello"))
         class Quiet(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *a):
                 pass
@@ -407,6 +410,38 @@ def http_from_go():
             assert out.startswith("HTTP/1.0 404 "), out
         finally:
             vm.kill()
+
+
+@test
+def install_program_over_network():
+    """ネットワーク越しにプログラムを取ってきて /data/bin に置けば、OS をビルドし直さずに育つ"""
+    disk = new_disk()
+    try:
+        with HostHTTPServer() as srv:
+            vm = booted(disk, net=True)
+            try:
+                base = f"http://10.0.2.2:{srv.port}"
+                assert cmd(vm, "mkdir /data/bin") == ""
+                out = cmd(vm, f"fetch -o /data/bin/hi {base}/bin/hello", timeout=30)
+                size = os.path.getsize(f"{ROOT}/build/bin/hello")
+                assert out == f"saved {size} bytes to /data/bin/hi", out
+                assert cmd(vm, "chmod 755 /data/bin/hi") == ""
+                assert cmd(vm, "hi from network").endswith(" from network env=3")
+                # 失敗したときは何も残さない
+                out = cmd(vm, f"fetch -o /data/bin/none {base}/bin/nosuch", timeout=30)
+                assert out.startswith(f"fetch: {base}/bin/nosuch 404 ") and out.endswith("[exit 1]"), out
+                assert "none" not in cmd(vm, "ls /data/bin")
+                vm.send("shutdown\n")
+                assert vm.wait_exit() == 0
+            finally:
+                vm.kill()
+        vm = booted(disk)  # ネットワーク無しで再起動しても残っている
+        try:
+            assert cmd(vm, "hi again").endswith(" again env=3")
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
 
 
 @test
