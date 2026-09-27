@@ -2,7 +2,7 @@
 #include "lib.h"
 #include "net.h"
 
-#define VERSION "0.10"
+#define VERSION "0.11"
 
 static void banner(void) {
     struct utsname u;
@@ -23,17 +23,68 @@ static long mount(const char *src, const char *dir, const char *type) {
     return syscall6(SYS_mount, (long)src, (long)dir, (long)type, 0, 0, 0);
 }
 
+#define MS_BIND 4096
+
+struct block_list { char names[16][32]; int n; };
+
+static void collect_block(const char *name, unsigned char type, void *ctx) {
+    (void)type;
+    struct block_list *l = ctx;
+    if (name[0] == '.' || l->n >= 16) return;
+    size_t i = 0;
+    for (; name[i] && i < sizeof l->names[0] - 1; i++) l->names[l->n][i] = name[i];
+    l->names[l->n][i] = 0;
+    l->n++;
+}
+
+// UEFI で起動したときの起動メディア（EFI/BOOT/BOOTX64.EFI がある FAT）を探して /boot にマウントする。
+// USB メモリの認識には数秒かかるので、最大 10 秒待つ。見つけたデバイス名を dev に入れて 0 を返す
+static long mount_boot_media(char *dev, size_t size) {
+    for (int tries = 0; tries < 50; tries++) {
+        struct block_list l = {0};
+        each_dirent("/sys/class/block", collect_block, &l);
+        for (int i = 0; i < l.n; i++) {
+            join_path(dev, size, "/dev", l.names[i]);
+            // FAT には実行権限が無いので全ファイルを 755 扱いにし、chmod はエラーにしない
+            if (syscall6(SYS_mount, (long)dev, (long)"/boot", (long)"vfat", 0, (long)"fmask=0022,dmask=0022,quiet", 0) < 0)
+                continue;
+            struct stat st;
+            if (syscall3(SYS_stat, "/boot/EFI/BOOT/BOOTX64.EFI", &st, 0) >= 0) return 0;
+            syscall3(SYS_umount2, "/boot", 0, 0);
+        }
+        struct { long sec, nsec; } ts = {0, 200000000};
+        syscall3(SYS_nanosleep, &ts, 0, 0);
+    }
+    return -2;
+}
+
 // 起動時のマウント。/data は永続ディスク（/dev/vda、minix）。無ければメモリだけで動く
 static void mount_all(void) {
     status("Mounted /proc", mount("proc", "/proc", "proc"));
     status("Mounted /sys", mount("sysfs", "/sys", "sysfs"));
     status("Mounted /dev", mount("devtmpfs", "/dev", "devtmpfs"));
     struct stat st;
-    if (syscall3(SYS_stat, "/dev/vda", &st, 0) < 0) {
-        print("  [ -- ] No disk: /data is not persistent\n");
+    if (syscall3(SYS_stat, "/dev/vda", &st, 0) >= 0) {
+        status("Mounted /data (/dev/vda)", mount("/dev/vda", "/data", "minix"));
         return;
     }
-    status("Mounted /data (/dev/vda)", mount("/dev/vda", "/data", "minix"));
+    // UEFI で起動していれば、起動した USB メモリなどの FAT に minios-data を作って /data にする
+    if (syscall3(SYS_stat, "/sys/firmware/efi", &st, 0) >= 0) {
+        char dev[64];
+        long e = mount_boot_media(dev, sizeof dev);
+        if (e >= 0) {
+            syscall3(SYS_mkdir, "/boot/minios-data", 0755, 0);
+            e = syscall6(SYS_mount, (long)"/boot/minios-data", (long)"/data", 0, MS_BIND, 0, 0);
+            char what[96] = "Mounted /data (";
+            size_t n = slen(what);
+            for (const char *p = dev; *p && n < sizeof what - 20; p++) what[n++] = *p;
+            for (const char *p = " minios-data)"; *p; p++) what[n++] = *p;
+            what[n] = 0;
+            status(what, e);
+            return;
+        }
+    }
+    print("  [ -- ] No disk: /data is not persistent\n");
 }
 
 // QEMU のユーザーモードネットワーク（slirp）の決まった値
@@ -75,10 +126,11 @@ static void net_up(void) {
     syscall3(SYS_close, sock, 0, 0);
 }
 
-// 書き込み待ちのデータをディスクへ書き出し、/data を外す
+// 書き込み待ちのデータをディスクへ書き出し、/data と /boot を外す
 static void unmount_all(void) {
     syscall3(SYS_sync, 0, 0, 0);
     syscall3(SYS_umount2, "/data", 0, 0);
+    syscall3(SYS_umount2, "/boot", 0, 0);
 }
 
 // ---- コマンド ----
@@ -472,6 +524,8 @@ static void cmd_shutdown(char *args) {
     (void)args;
     unmount_all();
     print("Bye.\n");
+    // write は端末の送信バッファに入れた時点で戻る。すぐ電源を切ると送り出される前に消えるので、送信が終わるのを待つ
+    syscall3(SYS_ioctl, 1, TCSBRK, 1);
     power_off();
 }
 

@@ -82,6 +82,7 @@ static long syscall6(long n, long a, long b, long c, long d, long e, long f) {
 
 #define TCGETS     0x5401
 #define TCSETS     0x5402
+#define TCSBRK     0x5409  // 引数 1 で tcdrain（送信バッファが空になるまで待つ）
 #define TIOCSCTTY  0x540E
 #define TIOCSPGRP  0x5410
 #define VSUSP      10

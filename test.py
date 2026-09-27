@@ -20,7 +20,8 @@ class Timeout(Exception):
 
 
 class VM:
-    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, efi=False, usb_kbd=False, extra=()):
+    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, efi=False, usb_kbd=False,
+                 esp=None, esp_on_usb=False, extra=()):
         if disk:
             extra = ("-drive", f"file={disk},format=raw,if=virtio", *extra)
         extra = ("-nic", "user,model=virtio-net-pci" if net else "none", *extra)
@@ -33,17 +34,24 @@ class VM:
         if efi:
             # 実機と同じ経路: UEFI ファームウェア → FAT ディスク上の BOOTX64.EFI。
             # -no-reboot を付けない。ACPI の電源断が効かなければ再起動を繰り返して終わらないので、それで確かめられる
-            # IDE ディスクは読み取り専用にできないので、ESP は一時ディレクトリにコピーして書き込み可能で渡す
+            # ESP（FAT に見せるディレクトリ）は書き込まれるので、指定が無ければ一時ディレクトリにコピーして渡す。
+            # IDE ディスクは読み取り専用にできない。esp_on_usb なら USB メモリとしてつなぐ（実機の USB 起動と同じ）
             import shutil, tempfile
             self.tmp = tempfile.TemporaryDirectory()
-            esp = os.path.join(self.tmp.name, "esp")
-            shutil.copytree(f"{ROOT}/build/efi", esp)
+            if esp is None:
+                esp = os.path.join(self.tmp.name, "esp")
+                shutil.copytree(f"{ROOT}/build/efi", esp)
             vars_fd = os.path.join(self.tmp.name, "vars.fd")
             shutil.copy("/usr/share/OVMF/OVMF_VARS_4M.fd", vars_fd)
+            if esp_on_usb:
+                esp_drive = ("-device", "qemu-xhci", "-drive", f"if=none,id=stick,format=raw,file=fat:rw:{esp}",
+                             "-device", "usb-storage,drive=stick")
+            else:
+                esp_drive = ("-drive", f"file=fat:rw:{esp},format=raw")
             boot = ("-m", "256M",
                     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
                     "-drive", f"if=pflash,format=raw,file={vars_fd}",
-                    "-drive", f"file=fat:rw:{esp},format=raw")
+                    *esp_drive)
         else:
             boot = ("-m", "64M", "-kernel", f"{ROOT}/build/bzImage", "-initrd", f"{ROOT}/build/initramfs.cpio",
                     "-append", append, "-no-reboot")
@@ -81,7 +89,7 @@ class VM:
             try:
                 self._read(left)
             except EOFError:
-                raise Timeout(f"expect {pattern!r}: VM exited")
+                raise Timeout(f"expect {pattern!r}: VM exited; last output: {clean[-300:]!r}")
 
     def monitor(self, command):
         """QEMU のモニタ（HMP）にコマンドを送る"""
@@ -569,7 +577,7 @@ def efi_screen_and_keyboard():
             raise AssertionError("USB keyboard not found")
         time.sleep(0.5)
         screen = cmd(vm, "screen")
-        assert re.search(r"^\|  minios 0\.10$", screen, re.M) and re.search(r"^\|minios#$", screen, re.M), screen
+        assert re.search(r"^\|  minios \d+\.\d+$", screen, re.M) and re.search(r"^\|minios#$", screen, re.M), screen
         vm.type_keys("echo typed on usb\n")
         for _ in range(50):
             screen = cmd(vm, "screen")
@@ -582,6 +590,46 @@ def efi_screen_and_keyboard():
         ppm_to_png(f"{ROOT}/build/screen.ppm", f"{ROOT}/build/screen.png")
     finally:
         vm.kill()
+
+
+@test
+def efi_usb_stick():
+    """USB メモリから UEFI で起動し、同じ USB メモリ（FAT）の minios-data を /data にして、再起動後も残る"""
+    if not efi_image_fresh():
+        return
+    import shutil, tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        esp = os.path.join(tmp, "esp")
+        shutil.copytree(f"{ROOT}/build/efi", esp)
+        # QEMU の仮想 FAT（vvfat）は、ゲストがディレクトリを作ると QEMU ごと落ちる（handle_renames_and_mkdirs の assert）。
+        # ディレクトリはホスト側で作っておき、ゲストはファイルだけ書く。本物の FAT なら mkdir も問題ない
+        os.makedirs(os.path.join(esp, "minios-data", "bin"))
+        vm = VM(efi=True, esp=esp, esp_on_usb=True)
+        try:
+            vm.expect(r"\[ OK \] Mounted /data \(/dev/sda1 minios-data\)", timeout=120)
+            vm.expect(PROMPT)
+            out = cmd(vm, "ls /boot")
+            assert re.search(r"^d +\d+  EFI/$", out, re.M) and re.search(r"^d +\d+  minios-data/$", out, re.M), out
+            assert cmd(vm, "echo saved on usb > /data/note") == ""
+            # プログラムを置いて実行できる（FAT に実行権限は無いが、全ファイルを 755 扱いでマウントしている）
+            assert cmd(vm, "cat /bin/hello > /data/bin/hi") == ""
+            assert cmd(vm, "chmod 755 /data/bin/hi") == ""
+            assert cmd(vm, "hi on stick").endswith(" on stick env=3")
+            vm.send("shutdown\n")
+            vm.expect(r"Bye\.")
+            assert vm.wait_exit(30) == 0
+        finally:
+            vm.kill()
+        with open(os.path.join(esp, "minios-data", "note")) as f:  # ホストから見ても USB メモリに書かれている
+            assert f.read() == "saved on usb\n"
+        vm = VM(efi=True, esp=esp, esp_on_usb=True)
+        try:
+            vm.expect(r"\[ OK \] Mounted /data \(/dev/sda1 minios-data\)", timeout=120)
+            vm.expect(PROMPT)
+            assert cmd(vm, "cat /data/note") == "saved on usb"
+            assert cmd(vm, "hi again").endswith(" again env=3")
+        finally:
+            vm.kill()
 
 
 @test

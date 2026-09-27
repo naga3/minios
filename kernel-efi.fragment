@@ -26,3 +26,14 @@ USB_HID               # USB キーボード
 SERIO                 # PS/2
 SERIO_I8042
 KEYBOARD_ATKBD        # PS/2 キーボード
+
+# 起動した USB メモリ（FAT）にデータも保存する
+SCSI                  # USB メモリは SCSI ディスクとして見える
+BLK_DEV_SD            # SCSI ディスク（/dev/sda）
+USB_STORAGE           # USB メモリ
+MSDOS_PARTITION       # パーティション表（MBR）
+EFI_PARTITION         # パーティション表（GPT）
+FAT_FS
+VFAT_FS               # FAT（UEFI の起動パーティションの形式）
+NLS_CODEPAGE_437      # FAT のファイル名の文字コード
+NLS_ISO8859_1

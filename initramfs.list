@@ -17,3 +17,4 @@ slink /bin/gohello gobox 0777 0 0
 slink /bin/fetch gobox 0777 0 0
 file /bin/orphan build/bin/orphan 0755 0 0
 file /bin/screen build/bin/screen 0755 0 0
+dir /boot 0755 0 0
