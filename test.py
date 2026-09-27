@@ -412,6 +412,29 @@ def init_supervises_shells():
 
 
 @test
+def pipes():
+    vm = booted()
+    try:
+        assert cmd(vm, "echo hello world | cat") == "hello world"
+        assert cmd(vm, "help | grep ping") == "  ping      ping <a.b.c.d> [count]"
+        assert re.fullmatch(r" +1  S  init", cmd(vm, "ps | grep init")), cmd(vm, "ps | grep init")
+        assert cmd(vm, "help | grep sh | grep shut") == "  shutdown  power off (exit QEMU)"  # 3 段
+        assert cmd(vm, "help | grep nosuch") == "[exit 1]"                             # 最後の段の終わり方を出す
+        assert cmd(vm, "hello a | grep hello > /p.txt") == ""                          # 最後の段のリダイレクト
+        assert re.fullmatch(r"hello from pid \d+ \(parent \d+\) a env=3", cmd(vm, "cat /p.txt"))
+        assert cmd(vm, "echo x | nosuch") == "nosuch: command not found\n[exit 127]"
+        assert cmd(vm, "echo x | | cat") == "|: invalid argument"
+        vm.send("spin | cat\n")                       # Ctrl+C は全段に届く
+        vm.expect(r"spinning")
+        vm.send("\x03")
+        vm.expect(r"\[signal 2\]")
+        vm.expect(PROMPT)
+        assert cmd(vm, "echo alive") == "alive"
+    finally:
+        vm.kill()
+
+
+@test
 def ctrl_c_stops_program():
     vm = booted()
     try:

@@ -156,17 +156,23 @@ static void cmd_ls(char *args) {
     if (r < 0) print_err(ctx.dir, r);
 }
 
+static void cat_fd(long fd, const char *name) {
+    char buf[4096];
+    long n;
+    while ((n = syscall3(SYS_read, fd, buf, sizeof buf)) > 0) write_all(1, buf, n);
+    if (n < 0) print_err(name, n);
+}
+
+// cat [file...]: ファイルを出す。引数が無ければ標準入力を出す（パイプの途中で使う）
 static void cmd_cat(char *args) {
-    char *path;
-    while ((path = next_word(&args))) {
+    char *path = next_word(&args);
+    if (!path) { cat_fd(0, "stdin"); return; }
+    do {
         long fd = syscall3(SYS_open, path, O_RDONLY, 0);
         if (fd < 0) { print_err(path, fd); continue; }
-        char buf[4096];
-        long n;
-        while ((n = syscall3(SYS_read, fd, buf, sizeof buf)) > 0) write_all(1, buf, n);
-        if (n < 0) print_err(path, n);
+        cat_fd(fd, path);
         syscall3(SYS_close, fd, 0, 0);
-    }
+    } while ((path = next_word(&args)));
 }
 
 static void cmd_mkdir(char *args) {
@@ -413,7 +419,7 @@ static const struct {
     {"dmesg",    cmd_dmesg,    "kernel log"},
     {"mounts",   cmd_mounts,   "mounted filesystems"},
     {"ls",       cmd_ls,       "list directory"},
-    {"cat",      cmd_cat,      "print files"},
+    {"cat",      cmd_cat,      "print files (stdin if none)"},
     {"mkdir",    cmd_mkdir,    "make directories"},
     {"rm",       cmd_rm,       "remove files or empty directories"},
     {"chmod",    cmd_chmod,    "chmod <octal-mode> <path>..."},
@@ -462,52 +468,122 @@ static int find_program(const char *cmd, char *out, size_t size) {
     return 0;
 }
 
-// fork して子で execve し、終わるまで待つ。0 以外で終わったら終了コードかシグナルを出す
-static void spawn(char *cmd, char *args) {
+static int find_builtin(const char *name) {
+    for (size_t i = 0; i < NCOMMANDS; i++)
+        if (seq(name, commands[i].name)) return i;
+    return -1;
+}
+
+// "cmd args > file" / ">> file" のリダイレクトを取り除き、行き先のファイルを開いて返す。無ければ 1（標準出力のまま）
+static long open_redirect(char *line) {
+    char *gt = 0;
+    for (char *p = line; *p; p++)
+        if (*p == '>') { gt = p; break; }
+    if (!gt) return 1;
+    int flags = O_WRONLY | O_CREAT | O_TRUNC;
+    *gt = 0;
+    char *rest = gt + 1;
+    if (*rest == '>') { flags = O_WRONLY | O_CREAT | O_APPEND; rest++; }
+    char *path = next_word(&rest);
+    if (!path) { print_err(">", -22); return -22; }
+    long fd = syscall3(SYS_open, path, flags, 0644);
+    if (fd < 0) print_err(path, fd);
+    return fd;
+}
+
+// 子プロセスの中で 1 段を実行する。組み込みコマンドならその場で実行して終わり、外部プログラムなら execve する
+static void __attribute__((noreturn)) exec_stage(char *line) {
+    // シェルが無視しているシグナルは exec を越えて引き継がれるので戻す
+    signal(SIGINT, SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
+    signal(SIGTTOU, SIG_DFL);
+    long fd = open_redirect(line);
+    if (fd < 0) syscall3(SYS_exit_group, 1, 0, 0);
+    if (fd != 1) {
+        syscall3(SYS_dup2, fd, 1, 0);
+        syscall3(SYS_close, fd, 0, 0);
+    }
+    char *cmd = next_word(&line);
+    if (!cmd) syscall3(SYS_exit_group, 0, 0, 0);
+    int b = find_builtin(cmd);
+    if (b >= 0) {
+        commands[b].fn(line);
+        syscall3(SYS_exit_group, 0, 0, 0);
+    }
     char path[256];
     if (!find_program(cmd, path, sizeof path)) {
         write_all(2, cmd, slen(cmd));
         write_all(2, ": command not found\n", 20);
-        return;
+        syscall3(SYS_exit_group, 127, 0, 0);
     }
     char *argv[32];
     int argc = 0;
     argv[argc++] = cmd;
     char *w;
-    while (argc < 31 && (w = next_word(&args))) argv[argc++] = w;
+    while (argc < 31 && (w = next_word(&line))) argv[argc++] = w;
     argv[argc] = 0;
+    long e = syscall3(SYS_execve, path, argv, child_env);
+    print_err(path, e);
+    syscall3(SYS_exit_group, 127, 0, 0);
+    for (;;) {}
+}
 
-    // 子を端末の前面に立たせるのはシェルの仕事。子が自分で TIOCSPGRP すると、
-    // 孤児のプロセスグループ扱いで EIO になることがあるため。切り替えが済むまで子をパイプで待たせる。
-    // 前面を取り戻すときシェルは背景にいるので、SIGTTOU を無視しておく（session）
+#define MAX_STAGES 8
+
+// 各段を子プロセスで動かし、パイプでつなぐ（a | b | c）。外部プログラム 1 つだけの実行も 1 段のパイプラインとして扱う。
+// 全段を 1 つのプロセスグループにして端末の前面に立たせるので、Ctrl+C の SIGINT は全段に届く。
+// 前面の切り替えはシェルの仕事（子が自分で TIOCSPGRP すると、孤児のプロセスグループ扱いで EIO になることがある）。
+// 切り替えが済むまで子を sync パイプで待たせる。前面を取り戻すときシェルは背景にいるので、SIGTTOU を無視しておく（session）
+static void pipeline(char **stages, int n) {
     int sync_pipe[2];
     long e = syscall3(SYS_pipe, sync_pipe, 0, 0);
     if (e < 0) { print_err("pipe", e); return; }
-    long pid = syscall3(SYS_fork, 0, 0, 0);
-    if (pid < 0) { print_err("fork", pid); return; }
-    if (pid == 0) {
-        syscall3(SYS_setpgid, 0, 0, 0);  // 自分のプロセスグループを作る。Ctrl+C の SIGINT はこのグループに届く
-        syscall3(SYS_close, sync_pipe[1], 0, 0);
-        char c;
-        syscall3(SYS_read, sync_pipe[0], &c, 1);  // 親が閉じると 0 が返る
-        syscall3(SYS_close, sync_pipe[0], 0, 0);
-        // シェルが無視しているシグナルは exec を越えて引き継がれるので戻す
-        signal(SIGINT, SIG_DFL);
-        signal(SIGQUIT, SIG_DFL);
-        signal(SIGTTOU, SIG_DFL);
-        e = syscall3(SYS_execve, path, argv, child_env);
-        print_err(path, e);
-        syscall3(SYS_exit_group, 127, 0, 0);
+    long pids[MAX_STAGES], pgid = 0;
+    int started = 0, prev_read = -1;
+    for (int i = 0; i < n; i++) {
+        int p[2] = {-1, -1};
+        if (i < n - 1 && (e = syscall3(SYS_pipe, p, 0, 0)) < 0) { print_err("pipe", e); break; }
+        long pid = syscall3(SYS_fork, 0, 0, 0);
+        if (pid < 0) { print_err("fork", pid); break; }
+        if (pid == 0) {
+            syscall3(SYS_setpgid, 0, pgid, 0);  // 1 段目は自分のグループを作り、2 段目以降はそこに入る
+            syscall3(SYS_close, sync_pipe[1], 0, 0);
+            char c;
+            syscall3(SYS_read, sync_pipe[0], &c, 1);  // シェルが閉じると 0 が返る
+            syscall3(SYS_close, sync_pipe[0], 0, 0);
+            if (prev_read >= 0) {
+                syscall3(SYS_dup2, prev_read, 0, 0);
+                syscall3(SYS_close, prev_read, 0, 0);
+            }
+            if (p[1] >= 0) {
+                syscall3(SYS_dup2, p[1], 1, 0);
+                syscall3(SYS_close, p[0], 0, 0);
+                syscall3(SYS_close, p[1], 0, 0);
+            }
+            exec_stage(stages[i]);
+        }
+        if (!pgid) pgid = pid;
+        syscall3(SYS_setpgid, pid, pgid, 0);  // 子とシェルのどちらが先に走っても同じ状態にする
+        pids[started++] = pid;
+        // シェルは使わない端を閉じる。閉じ忘れると、読む側に EOF が届かず止まらない
+        if (prev_read >= 0) syscall3(SYS_close, prev_read, 0, 0);
+        if (p[1] >= 0) syscall3(SYS_close, p[1], 0, 0);
+        prev_read = p[0];
     }
-    syscall3(SYS_setpgid, pid, pid, 0);  // 子と親のどちらが先に走っても同じ状態にする
-    syscall3(SYS_ioctl, 0, TIOCSPGRP, &pid);
+    if (prev_read >= 0) syscall3(SYS_close, prev_read, 0, 0);
+    if (pgid) syscall3(SYS_ioctl, 0, TIOCSPGRP, &pgid);
     syscall3(SYS_close, sync_pipe[0], 0, 0);
     syscall3(SYS_close, sync_pipe[1], 0, 0);
+
+    // 全段を待つ。報告するのは最後の段の終わり方（シェルの慣習）
     int status = 0;
-    long r = syscall6(SYS_wait4, pid, (long)&status, 0, 0, 0, 0);
+    for (int i = 0; i < started; i++) {
+        int st = 0;
+        if (syscall6(SYS_wait4, pids[i], (long)&st, 0, 0, 0, 0) >= 0 && i == started - 1) status = st;
+    }
     int self = syscall3(SYS_getpid, 0, 0, 0);
     syscall3(SYS_ioctl, 0, TIOCSPGRP, &self);  // 前面をシェルに戻す
-    if (r < 0) { print_err("wait4", r); return; }
+    if (!started) return;
     if ((status & 0x7f) == 0) {
         int code = (status >> 8) & 0xff;
         if (code) { print("[exit "); print_u(code); print("]\n"); }
@@ -516,40 +592,61 @@ static void spawn(char *cmd, char *args) {
     }
 }
 
-static void dispatch(char *line) {
-    char *cmd = next_word(&line);
-    if (!cmd) return;
-    for (size_t i = 0; i < NCOMMANDS; i++) {
-        if (seq(cmd, commands[i].name)) {
-            commands[i].fn(line);
+// 1 行を実行する。パイプを含めばパイプライン。含まなければ、組み込みコマンドはシェル自身の中で
+// （cd や exit が効くように）、外部プログラムは 1 段のパイプラインとして子プロセスで実行する
+static void run(char *line) {
+    char *stages[MAX_STAGES];
+    int n = 0;
+    stages[n++] = line;
+    for (char *p = line; *p; p++) {
+        if (*p != '|') continue;
+        if (n == MAX_STAGES) { print_err("|", -7 /* E2BIG */); return; }
+        *p = 0;
+        stages[n++] = p + 1;
+    }
+    for (int i = 0; i < n && n > 1; i++) {
+        const char *t = stages[i];
+        while (*t == ' ' || *t == '\t') t++;
+        if (!*t) { print_err("|", -22); return; }  // 空の段（"a | | b"）
+    }
+    if (n > 1) { pipeline(stages, n); return; }
+
+    // 先頭の単語が組み込みコマンドか（next_word は行を書き換えるので、写しで調べる）
+    char first[32];
+    size_t k = 0;
+    const char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    while (*p && *p != ' ' && *p != '\t' && *p != '>' && k < sizeof first - 1) first[k++] = *p++;
+    first[k] = 0;
+    if (!k) return;
+    int b = find_builtin(first);
+    if (b < 0) {
+        // 見つからなければ fork する前に知らせる（子の中で知らせると [exit 127] も出て煩い）
+        char path[256];
+        if (!find_program(first, path, sizeof path)) {
+            write_all(2, first, slen(first));
+            write_all(2, ": command not found\n", 20);
             return;
         }
+        pipeline(stages, 1);
+        return;
     }
-    spawn(cmd, line);
-}
 
-// "cmd args > file" / ">> file" なら、実行中だけ fd 1 をファイルに差し替える
-static void run(char *line) {
-    char *gt = 0;
-    for (char *p = line; *p; p++)
-        if (*p == '>') { gt = p; break; }
-    if (!gt) { dispatch(line); return; }
-
-    int flags = O_WRONLY | O_CREAT | O_TRUNC;
-    *gt = 0;
-    char *rest = gt + 1;
-    if (*rest == '>') { flags = O_WRONLY | O_CREAT | O_APPEND; rest++; }
-    char *path = next_word(&rest);
-    if (!path) { print_err(">", -22); return; }
-
-    long fd = syscall3(SYS_open, path, flags, 0644);
-    if (fd < 0) { print_err(path, fd); return; }
-    long saved = syscall3(SYS_dup, 1, 0, 0);
-    syscall3(SYS_dup2, fd, 1, 0);
-    syscall3(SYS_close, fd, 0, 0);
-    dispatch(line);
-    syscall3(SYS_dup2, saved, 1, 0);
-    syscall3(SYS_close, saved, 0, 0);
+    long fd = open_redirect(line);
+    if (fd < 0) return;
+    long saved = -1;
+    if (fd != 1) {
+        saved = syscall3(SYS_dup, 1, 0, 0);
+        syscall3(SYS_dup2, fd, 1, 0);
+        syscall3(SYS_close, fd, 0, 0);
+    }
+    char *rest = line;
+    next_word(&rest);
+    commands[b].fn(rest);
+    if (saved >= 0) {
+        syscall3(SYS_dup2, saved, 1, 0);
+        syscall3(SYS_close, saved, 0, 0);
+    }
 }
 
 // ---- シェル（端末ごとのセッション） ----
