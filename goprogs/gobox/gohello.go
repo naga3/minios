@@ -1,4 +1,4 @@
-// Go で書いた外部プログラム。ランタイムがどのカーネル機能を要るかを確かめる
+// gohello: ランタイムがどのカーネル機能を要るかを確かめる（goroutine、タイマー、ファイル）
 package main
 
 import (
@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-func main() {
-	fmt.Printf("hello from Go %s, pid %d, args %v\n", runtime.Version(), os.Getpid(), os.Args[1:])
+func gohello(args []string) int {
+	fmt.Printf("hello from Go %s, pid %d, args %v\n", runtime.Version(), os.Getpid(), args)
 
 	// goroutine とチャネル
 	var wg sync.WaitGroup
@@ -38,8 +38,9 @@ func main() {
 	// ファイル
 	if err := os.WriteFile("/tmp-go.txt", []byte("written by Go\n"), 0o644); err != nil {
 		fmt.Println("write error:", err)
-		os.Exit(1)
+		return 1
 	}
 	b, _ := os.ReadFile("/tmp-go.txt")
 	fmt.Print("file: ", string(b))
+	return 0
 }

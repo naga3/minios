@@ -397,6 +397,20 @@ class HostHTTPServer:
 
 
 @test
+def gobox_links():
+    """Go のプログラムは gobox 1 本にまとめ、/bin の名前はシンボリックリンク"""
+    vm = booted()
+    try:
+        out = cmd(vm, "ls /bin")
+        assert re.search(r"^l +\d+  fetch$", out, re.M) and re.search(r"^l +\d+  gohello$", out, re.M), out
+        assert cmd(vm, "gobox") == "usage: gobox <command> [args...]\ncommands: [fetch gohello]\n[exit 2]"
+        assert cmd(vm, "gobox gohello x", timeout=30).startswith("hello from Go ")
+        assert cmd(vm, "fetch") == "usage: fetch [-o path] <url>\n[exit 2]"
+    finally:
+        vm.kill()
+
+
+@test
 def http_from_go():
     with HostHTTPServer() as srv:
         vm = VM(net=True)
