@@ -46,14 +46,14 @@ class VM:
     def expect(self, pattern, timeout=15):
         """pattern（正規表現、ANSI エスケープ除去後）が出るまで待ち、それまでの出力を返す"""
         rx = re.compile(pattern.encode() if isinstance(pattern, str) else pattern)
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         while True:
             clean = ANSI.sub(b"", self.buf)
             m = rx.search(clean)
             if m:
                 self.buf = clean[m.end():]
                 return clean[:m.end()].decode(errors="replace")
-            left = deadline - time.time()
+            left = deadline - time.monotonic()
             if left <= 0:
                 raise Timeout(f"expect {pattern!r} timed out")
             try:
@@ -66,13 +66,13 @@ class VM:
         self.p.stdin.flush()
 
     def wait_exit(self, timeout=15):
-        deadline = time.time() + timeout
-        while self.p.poll() is None and time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while self.p.poll() is None and time.monotonic() < deadline:
             try:
                 self._read(0.1)
             except EOFError:
                 break
-        return self.p.wait(max(0.1, deadline - time.time()))
+        return self.p.wait(max(0.1, deadline - time.monotonic()))
 
     def kill(self):
         if self.p.poll() is None:
@@ -139,16 +139,33 @@ def basic_commands():
         vm.kill()
 
 
+@test
+def proc_and_sys():
+    vm = booted()
+    try:
+        out = cmd(vm, "mounts")
+        assert re.search(r"^proc /proc proc ", out, re.M), out
+        assert re.search(r"^sysfs /sys sysfs ", out, re.M), out
+        out = cmd(vm, "ps")
+        assert re.search(r"^ +1  [RS]  init$", out, re.M), out
+        assert re.search(r"^ +2  S  kthreadd$", out, re.M), out
+        out = cmd(vm, "dmesg")
+        assert "Linux version 7.2.8" in out, out[:200]
+        assert "Run /init as init process" in out, out[-500:]
+    finally:
+        vm.kill()
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0
     for fn in TESTS:
         if only not in fn.__name__:
             continue
-        t0 = time.time()
+        t0 = time.monotonic()
         try:
             fn()
-            print(f"PASS {fn.__name__} ({time.time() - t0:.1f}s)")
+            print(f"PASS {fn.__name__} ({time.monotonic() - t0:.1f}s)")
         except Exception as e:
             failed += 1
             print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")

@@ -1,7 +1,7 @@
 // minios の PID 1。起動メッセージを出し、コマンドを受け付ける
 #include "lib.h"
 
-#define VERSION "0.2"
+#define VERSION "0.3"
 
 static void banner(void) {
     struct utsname u;
@@ -10,6 +10,18 @@ static void banner(void) {
     print("\n  \033[1;32mminios\033[0m " VERSION "\n");
     print("  kernel: "); print(u.sysname); print(" "); print(u.release); print(" "); print(u.machine); print("\n\n");
     print("  Type 'help' for commands.\n\n");
+}
+
+// 起動時にカーネルの疑似ファイルシステムをマウントする
+static void mount_all(void) {
+    static const struct { const char *src, *dir, *type; } mounts[] = {
+        {"proc",  "/proc", "proc"},
+        {"sysfs", "/sys",  "sysfs"},
+    };
+    for (size_t i = 0; i < sizeof mounts / sizeof mounts[0]; i++) {
+        long r = syscall6(SYS_mount, (long)mounts[i].src, (long)mounts[i].dir, (long)mounts[i].type, 0, 0, 0);
+        if (r < 0) print_err(mounts[i].dir, r);
+    }
 }
 
 // ---- コマンド ----
@@ -37,6 +49,68 @@ static void cmd_mem(char *args) {
     unsigned long unit = si.mem_unit ? si.mem_unit : 1;
     print("total "); print_u_pad(si.totalram * unit / 1024, 8); print(" KiB\n");
     print("free  "); print_u_pad(si.freeram * unit / 1024, 8); print(" KiB\n");
+}
+
+// /proc/<pid>/stat の "pid (comm) state ..." から 1 行出す
+static void ps_entry(const char *name, unsigned char type, void *ctx) {
+    (void)type, (void)ctx;
+    if (!is_digits(name)) return;
+    char path[64] = "/proc/", buf[512];
+    size_t n = slen(path);
+    for (const char *p = name; *p; p++) path[n++] = *p;
+    for (const char *p = "/stat"; *p; p++) path[n++] = *p;
+    path[n] = 0;
+    if (read_file(path, buf, sizeof buf) <= 0) return;
+    // comm は空白や ')' を含み得るので、最後の ')' で区切る
+    char *open = buf, *close = 0;
+    while (*open && *open != '(') open++;
+    for (char *p = buf; *p; p++)
+        if (*p == ')') close = p;
+    if (!*open || !close) return;
+    *close = 0;
+    print("  ");
+    for (size_t pad = slen(name); pad < 5; pad++) print(" ");
+    print(name); print("  "); write_all(1, close + 2, 1); print("  "); print(open + 1); print("\n");
+}
+
+static void cmd_ps(char *args) {
+    (void)args;
+    print("    PID  S  COMMAND\n");
+    long r = each_dirent("/proc", ps_entry, 0);
+    if (r < 0) print_err("/proc", r);
+}
+
+#define SYSLOG_ACTION_READ_ALL    3
+#define SYSLOG_ACTION_SIZE_BUFFER 10
+
+static void cmd_dmesg(char *args) {
+    (void)args;
+    static char buf[1 << 17];
+    long size = syscall3(SYS_syslog, SYSLOG_ACTION_SIZE_BUFFER, 0, 0);
+    if (size < 0) { print_err("dmesg", size); return; }
+    if (size > (long)sizeof buf) size = sizeof buf;
+    long n = syscall3(SYS_syslog, SYSLOG_ACTION_READ_ALL, buf, size);
+    if (n < 0) { print_err("dmesg", n); return; }
+    // 各行の先頭の "<6>" のような優先度を落として出す
+    for (long i = 0; i < n;) {
+        if (buf[i] == '<') {
+            long j = i + 1;
+            while (j < n && buf[j] >= '0' && buf[j] <= '9') j++;
+            if (j < n && buf[j] == '>') i = j + 1;
+        }
+        long start = i;
+        while (i < n && buf[i] != '\n') i++;
+        if (i < n) i++;
+        write_all(1, buf + start, i - start);
+    }
+}
+
+static void cmd_mounts(char *args) {
+    (void)args;
+    static char buf[4096];
+    long n = read_file("/proc/mounts", buf, sizeof buf);
+    if (n < 0) { print_err("/proc/mounts", n); return; }
+    print(buf);
 }
 
 static void cmd_echo(char *args) {
@@ -70,6 +144,9 @@ static const struct {
     {"uname",    cmd_uname,    "kernel name and version"},
     {"uptime",   cmd_uptime,   "seconds since boot"},
     {"mem",      cmd_mem,      "memory usage"},
+    {"ps",       cmd_ps,       "list processes"},
+    {"dmesg",    cmd_dmesg,    "kernel log"},
+    {"mounts",   cmd_mounts,   "mounted filesystems"},
     {"echo",     cmd_echo,     "print arguments"},
     {"clear",    cmd_clear,    "clear the screen"},
     {"shutdown", cmd_shutdown, "power off (exit QEMU)"},
@@ -98,6 +175,7 @@ static void run(char *line) {
 }
 
 void _start(void) {
+    mount_all();
     banner();
 
     // 行編集（エコー、バックスペース）はカーネルの端末（canonical モード）に任せる

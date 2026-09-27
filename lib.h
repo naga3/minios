@@ -3,12 +3,20 @@
 
 typedef unsigned long size_t;
 
-#define SYS_read    0
-#define SYS_write   1
-#define SYS_ioctl   16
-#define SYS_sysinfo 99
-#define SYS_uname   63
-#define SYS_reboot  169
+#define SYS_read       0
+#define SYS_write      1
+#define SYS_open       2
+#define SYS_close      3
+#define SYS_ioctl      16
+#define SYS_uname      63
+#define SYS_sysinfo    99
+#define SYS_syslog     103
+#define SYS_mount      165
+#define SYS_reboot     169
+#define SYS_getdents64 217
+
+#define O_RDONLY    0
+#define O_DIRECTORY 0200000
 
 static long syscall6(long n, long a, long b, long c, long d, long e, long f) {
     long ret;
@@ -48,6 +56,13 @@ static char *next_word(char **s) {
     return w;
 }
 
+static int is_digits(const char *s) {
+    if (!*s) return 0;
+    for (; *s; s++)
+        if (*s < '0' || *s > '9') return 0;
+    return 1;
+}
+
 // ---- 出力 ----
 
 static void write_all(int fd, const char *s, size_t n) {
@@ -75,6 +90,52 @@ static void print_u_pad(unsigned long v, int width) {
     while (t /= 10) n++;
     while (n++ < width) print(" ");
     print_u(v);
+}
+
+static void print_err(const char *what, long err) {
+    print(what); print(": error "); print_u(-err); print("\n");
+}
+
+// ---- ファイル ----
+
+// path を最大 size-1 バイト読んで NUL 終端する。読めたバイト数か、負のエラー番号を返す
+static long read_file(const char *path, char *buf, size_t size) {
+    long fd = syscall3(SYS_open, path, O_RDONLY, 0);
+    if (fd < 0) return fd;
+    size_t n = 0;
+    while (n < size - 1) {
+        long r = syscall3(SYS_read, fd, buf + n, size - 1 - n);
+        if (r <= 0) break;
+        n += r;
+    }
+    syscall3(SYS_close, fd, 0, 0);
+    buf[n] = 0;
+    return n;
+}
+
+struct linux_dirent64 {
+    unsigned long d_ino;
+    long d_off;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[];
+};
+
+// ディレクトリの各エントリ名で fn を呼ぶ。0 か負のエラー番号を返す
+static long each_dirent(const char *path, void (*fn)(const char *name, unsigned char type, void *ctx), void *ctx) {
+    long fd = syscall3(SYS_open, path, O_RDONLY | O_DIRECTORY, 0);
+    if (fd < 0) return fd;
+    char buf[1024] __attribute__((aligned(8)));
+    long n;
+    while ((n = syscall3(SYS_getdents64, fd, buf, sizeof buf)) > 0) {
+        for (long off = 0; off < n;) {
+            struct linux_dirent64 *d = (struct linux_dirent64 *)(buf + off);
+            fn(d->d_name, d->d_type, ctx);
+            off += d->d_reclen;
+        }
+    }
+    syscall3(SYS_close, fd, 0, 0);
+    return n < 0 ? n : 0;
 }
 
 // ---- システム情報 ----

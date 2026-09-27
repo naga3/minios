@@ -6,3 +6,5 @@ SERIAL_8250           # シリアルポート(ttyS0)のドライバ
 SERIAL_8250_CONSOLE   # シリアルポートをコンソールにする
 BLK_DEV_INITRD        # initramfs を読む
 BINFMT_ELF            # ELF 実行ファイルを起動する
+PROC_FS               # /proc（プロセス情報）
+SYSFS                 # /sys（デバイス情報）
