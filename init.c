@@ -2,7 +2,7 @@
 #include "lib.h"
 #include "net.h"
 
-#define VERSION "0.8"
+#define VERSION "0.9"
 
 static void banner(void) {
     struct utsname u;
@@ -84,6 +84,7 @@ static void unmount_all(void) {
 // ---- コマンド ----
 
 static void cmd_help(char *args);
+static void run(char *line);
 
 static void cmd_uname(char *args) {
     (void)args;
@@ -291,6 +292,38 @@ static void cmd_pwd(char *args) {
     print(buf); print("\n");
 }
 
+// source <file>: ファイルの各行をコマンドとして実行する。# 以降はコメント
+static void source_file(const char *path, int quiet_if_missing) {
+    static int depth;
+    if (depth >= 8) { print_err(path, -40 /* ELOOP */); return; }
+    static char bufs[8][4096];
+    char *buf = bufs[depth];
+    long n = read_file(path, buf, sizeof bufs[0]);
+    if (n < 0) {
+        if (!quiet_if_missing || n != -2) print_err(path, n);
+        return;
+    }
+    depth++;
+    char *line = buf;
+    while (*line) {
+        char *end = line;
+        while (*end && *end != '\n') end++;
+        char *next = *end ? end + 1 : end;
+        *end = 0;
+        for (char *p = line; *p; p++)
+            if (*p == '#') { *p = 0; break; }
+        run(line);
+        line = next;
+    }
+    depth--;
+}
+
+static void cmd_source(char *args) {
+    char *path = next_word(&args);
+    if (!path) { print_err("usage: source <file>", -22); return; }
+    source_file(path, 0);
+}
+
 static void cmd_echo(char *args) {
     char *w;
     int first = 1;
@@ -465,6 +498,7 @@ static const struct {
     {"sync",     cmd_sync,     "flush writes to disk"},
     {"ifconfig", cmd_ifconfig, "network interfaces"},
     {"ping",     cmd_ping,     "ping <a.b.c.d> [count]"},
+    {"source",   cmd_source,   "run commands from a file"},
     {"echo",     cmd_echo,     "print arguments (cmd > file, >> to append)"},
     {"clear",    cmd_clear,    "clear the screen"},
     {"shutdown", cmd_shutdown, "power off (exit QEMU)"},
@@ -615,6 +649,12 @@ void _start(void) {
     mount_all();
     setup_tty();
     net_up();
+    // 永続ディスクの起動スクリプト。OS をビルドし直さずに起動時の振る舞いを変えられる
+    struct stat st;
+    if (syscall3(SYS_stat, "/data/rc", &st, 0) >= 0) {
+        status("Running /data/rc", 0);
+        source_file("/data/rc", 1);
+    }
     print("\n  Type 'help' for commands.\n\n");
 
     // 行編集（エコー、バックスペース）はカーネルの端末（canonical モード）に任せる

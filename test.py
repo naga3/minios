@@ -423,6 +423,36 @@ def internet_dns_and_https():
         vm.kill()
 
 
+@test
+def boot_script():
+    """/data/rc に書いたコマンドが起動時に動く。OS をビルドし直さずに振る舞いを変えられる"""
+    disk = new_disk()
+    try:
+        vm = booted(disk)
+        try:
+            assert cmd(vm, "echo echo hello from rc > /data/rc") == ""
+            assert cmd(vm, "echo mkdir /tmp   # comment >> /data/rc") == ""
+            assert cmd(vm, "cat /data/rc") == "echo hello from rc\nmkdir /tmp # comment"  # source で読むときにコメントとして捨てる
+            vm.send("shutdown\n")
+            assert vm.wait_exit() == 0
+        finally:
+            vm.kill()
+        vm = VM(disk=disk)
+        try:
+            vm.expect(r"\[ OK \] Running /data/rc")
+            vm.expect(r"hello from rc")
+            vm.expect(PROMPT)
+            assert re.search(r"^d +\d+  tmp/$", cmd(vm, "ls /"), re.M)
+            # source は入れ子にでき、自分自身を読むと深さの上限で止まる
+            assert cmd(vm, "echo source /data/loop > /data/loop") == ""
+            assert cmd(vm, "source /data/loop") == "/data/loop: too many levels (loop?)"
+            assert cmd(vm, "source /nosuch") == "/nosuch: no such file or directory"
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0
