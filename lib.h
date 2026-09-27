@@ -12,11 +12,16 @@ typedef unsigned long size_t;
 #define SYS_ioctl      16
 #define SYS_dup        32
 #define SYS_dup2       33
+#define SYS_getpid     39
+#define SYS_fork       57
+#define SYS_execve     59
+#define SYS_wait4      61
 #define SYS_uname      63
 #define SYS_getcwd     79
 #define SYS_chdir      80
 #define SYS_mkdir      83
 #define SYS_rmdir      84
+#define SYS_chmod      90
 #define SYS_unlink     87
 #define SYS_sysinfo    99
 #define SYS_syslog     103
@@ -25,7 +30,9 @@ typedef unsigned long size_t;
 #define SYS_mount      165
 #define SYS_umount2    166
 #define SYS_reboot     169
+#define SYS_getppid    110
 #define SYS_getdents64 217
+#define SYS_exit_group 231
 
 #define O_RDONLY    0
 #define O_WRONLY    01

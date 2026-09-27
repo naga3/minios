@@ -2,7 +2,7 @@
 #include "lib.h"
 #include "net.h"
 
-#define VERSION "0.6"
+#define VERSION "0.7"
 
 static void banner(void) {
     struct utsname u;
@@ -223,6 +223,21 @@ static void cmd_rm(char *args) {
     }
 }
 
+// chmod <8 進数のモード> <パス>...
+static void cmd_chmod(char *args) {
+    char *mode_s = next_word(&args), *path;
+    unsigned int mode = 0;
+    for (char *p = mode_s ? mode_s : ""; *p; p++) {
+        if (*p < '0' || *p > '7') { mode_s = 0; break; }
+        mode = mode * 8 + (*p - '0');
+    }
+    if (!mode_s) { print_err("usage: chmod <octal-mode> <path>...", -22); return; }
+    while ((path = next_word(&args))) {
+        long r = syscall3(SYS_chmod, path, mode, 0);
+        if (r < 0) print_err(path, r);
+    }
+}
+
 static void cmd_cd(char *args) {
     char *path = next_word(&args);
     long r = syscall3(SYS_chdir, path ? path : "/", 0, 0);
@@ -403,6 +418,7 @@ static const struct {
     {"cat",      cmd_cat,      "print files"},
     {"mkdir",    cmd_mkdir,    "make directories"},
     {"rm",       cmd_rm,       "remove files or empty directories"},
+    {"chmod",    cmd_chmod,    "chmod <octal-mode> <path>..."},
     {"cd",       cmd_cd,       "change directory"},
     {"pwd",      cmd_pwd,      "print working directory"},
     {"df",       cmd_df,       "disk usage"},
@@ -422,6 +438,61 @@ static void cmd_help(char *args) {
         for (size_t n = slen(commands[i].name); n < 10; n++) print(" ");
         print(commands[i].help); print("\n");
     }
+    print("\nOther commands run programs from /bin and /data/bin.\n");
+}
+
+// ---- 外部プログラム ----
+
+static char *const child_env[] = {"HOME=/", "TERM=linux", "PATH=/bin:/data/bin", 0};
+static const char *const path_dirs[] = {"/bin", "/data/bin"};
+
+// cmd を実行ファイルのパスに解決する。"/" を含めばそのまま、無ければ path_dirs から探す
+static int find_program(const char *cmd, char *out, size_t size) {
+    struct stat st;
+    for (const char *p = cmd; *p; p++) {
+        if (*p == '/') {
+            join_path(out, size, "", cmd);
+            return syscall3(SYS_stat, out, &st, 0) >= 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof path_dirs / sizeof path_dirs[0]; i++) {
+        join_path(out, size, path_dirs[i], cmd);
+        if (syscall3(SYS_stat, out, &st, 0) >= 0 && (st.st_mode & S_IFMT) != S_IFDIR) return 1;
+    }
+    return 0;
+}
+
+// fork して子で execve し、終わるまで待つ。0 以外で終わったら終了コードかシグナルを出す
+static void spawn(char *cmd, char *args) {
+    char path[256];
+    if (!find_program(cmd, path, sizeof path)) {
+        write_all(2, cmd, slen(cmd));
+        write_all(2, ": command not found\n", 20);
+        return;
+    }
+    char *argv[32];
+    int argc = 0;
+    argv[argc++] = cmd;
+    char *w;
+    while (argc < 31 && (w = next_word(&args))) argv[argc++] = w;
+    argv[argc] = 0;
+
+    long pid = syscall3(SYS_fork, 0, 0, 0);
+    if (pid < 0) { print_err("fork", pid); return; }
+    if (pid == 0) {
+        long e = syscall3(SYS_execve, path, argv, child_env);
+        print_err(path, e);
+        syscall3(SYS_exit_group, 127, 0, 0);
+    }
+    int status = 0;
+    long r = syscall6(SYS_wait4, pid, (long)&status, 0, 0, 0, 0);
+    if (r < 0) { print_err("wait4", r); return; }
+    if ((status & 0x7f) == 0) {
+        int code = (status >> 8) & 0xff;
+        if (code) { print("[exit "); print_u(code); print("]\n"); }
+    } else {
+        print("[signal "); print_u(status & 0x7f); print("]\n");
+    }
 }
 
 static void dispatch(char *line) {
@@ -433,8 +504,7 @@ static void dispatch(char *line) {
             return;
         }
     }
-    write_all(2, cmd, slen(cmd));
-    write_all(2, ": command not found\n", 20);
+    spawn(cmd, line);
 }
 
 // "cmd args > file" / ">> file" なら、実行中だけ fd 1 をファイルに差し替える

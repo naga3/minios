@@ -23,10 +23,20 @@ if ! cmp -s build/fragment.args build/fragment.args.built || [ ! -f build/bzImag
     cp build/fragment.args build/fragment.args.built
 fi
 
-# init: libc なしの静的バイナリ
-gcc -static -nostdlib -Os -ffreestanding -fno-stack-protector -fno-asynchronous-unwind-tables \
-    -Wall -Werror -o build/init init.c
+# libc なしの静的バイナリ。lib.h はヘッダだけのライブラリなので、使わない関数の警告は切る
+CFLAGS="-static -nostdlib -Os -ffreestanding -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Werror -Wno-unused-function"
+
+# init
+gcc $CFLAGS -o build/init init.c
 strip build/init
+
+# 外部プログラム（progs/*.c → build/bin/）
+mkdir -p build/bin
+for src in progs/*.c; do
+    name=$(basename "$src" .c)
+    gcc $CFLAGS -o "build/bin/$name" "$src"
+    strip "build/bin/$name"
+done
 
 # initramfs
 $KSRC/usr/gen_init_cpio initramfs.list > build/initramfs.cpio

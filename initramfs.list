@@ -4,3 +4,6 @@ file /init build/init 0755 0 0
 dir /proc 0755 0 0
 dir /sys 0755 0 0
 dir /data 0755 0 0
+dir /bin 0755 0 0
+file /bin/hello build/bin/hello 0755 0 0
+file /bin/false build/bin/false 0755 0 0

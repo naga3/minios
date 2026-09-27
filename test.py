@@ -287,6 +287,52 @@ def no_network():
         vm.kill()
 
 
+@test
+def external_programs():
+    vm = booted()
+    try:
+        out = cmd(vm, "hello a b")
+        assert re.fullmatch(r"hello from pid \d+ \(parent 1\) a b env=3", out), out
+        assert cmd(vm, "/bin/hello") .startswith("hello from pid ")
+        assert cmd(vm, "false") == "[exit 1]"
+        assert cmd(vm, "nosuch") == "nosuch: command not found"
+        assert cmd(vm, "/nosuch/x") == "/nosuch/x: command not found"
+        assert cmd(vm, "hello x > /out") == ""  # 子プロセスにもリダイレクトが引き継がれる
+        assert cmd(vm, "cat /out").endswith(" x env=3")
+        assert cmd(vm, "cat /bin/hello > /h2") == ""
+        assert cmd(vm, "/h2") == "/h2: permission denied\n[exit 127]"
+        assert cmd(vm, "chmod 755 /h2") == ""
+        assert cmd(vm, "/h2 copied").endswith(" copied env=3")
+        assert cmd(vm, "chmod 9 /h2") == "usage: chmod <octal-mode> <path>...: invalid argument"
+    finally:
+        vm.kill()
+
+
+@test
+def install_program_on_disk():
+    """OS をビルドし直さずに、/data/bin に置いたプログラムで機能が増え、再起動後も残る"""
+    disk = new_disk()
+    try:
+        vm = booted(disk)
+        try:
+            assert cmd(vm, "hi") == "hi: command not found"
+            assert cmd(vm, "mkdir /data/bin") == ""
+            assert cmd(vm, "cat /bin/hello > /data/bin/hi") == ""
+            assert cmd(vm, "chmod 755 /data/bin/hi") == ""
+            assert cmd(vm, "hi there").endswith(" there env=3")
+            vm.send("shutdown\n")
+            assert vm.wait_exit() == 0
+        finally:
+            vm.kill()
+        vm = booted(disk)
+        try:
+            assert cmd(vm, "hi again").endswith(" again env=3")
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0
