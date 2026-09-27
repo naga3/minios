@@ -156,6 +156,34 @@ def proc_and_sys():
         vm.kill()
 
 
+@test
+def files_and_redirect():
+    vm = booted()
+    try:
+        assert cmd(vm, "pwd") == "/"
+        assert cmd(vm, "mkdir /tmp") == ""
+        assert cmd(vm, "cd /tmp") == ""
+        assert cmd(vm, "pwd") == "/tmp"
+        assert cmd(vm, "echo hello > a.txt") == ""
+        assert cmd(vm, "echo world >> a.txt") == ""
+        assert cmd(vm, "cat a.txt") == "hello\nworld"
+        assert cmd(vm, "uname >a.txt") == ""        # 空白なしでも、どのコマンドでもリダイレクトできる
+        assert cmd(vm, "cat a.txt").startswith("Linux 7.2.8 ")
+        assert re.fullmatch(r"- +\d+  a\.txt", cmd(vm, "ls")), cmd(vm, "ls")
+        assert cmd(vm, "mkdir sub") == ""
+        assert re.search(r"^d +\d+  sub/$", cmd(vm, "ls /tmp"), re.M)
+        assert cmd(vm, "cat nosuch") == "nosuch: no such file or directory"
+        assert cmd(vm, "echo x > /nosuchdir/f") == "/nosuchdir/f: no such file or directory"
+        assert cmd(vm, "rm a.txt sub") == ""
+        assert cmd(vm, "ls") == ""
+        assert cmd(vm, "cd /") == ""
+        assert cmd(vm, "rm /tmp") == ""
+        assert "init" in cmd(vm, "ls /")
+        assert re.search(r"^c +0  console$", cmd(vm, "ls /dev"), re.M)
+    finally:
+        vm.kill()
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0
@@ -170,6 +198,9 @@ def main():
             failed += 1
             print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
     sizes = {f: os.path.getsize(f"{ROOT}/build/{f}") for f in ("bzImage", "init", "initramfs.cpio")}
+    # ファイルは 4KB 単位で並ぶので、中身の大きさ（text + data）も出す
+    text, data = subprocess.run(["size", f"{ROOT}/build/init"], capture_output=True, text=True).stdout.split("\n")[1].split()[:2]
+    sizes["init_code"] = int(text) + int(data)
     print("SIZE " + " ".join(f"{k}={v}" for k, v in sizes.items()))
     sys.exit(1 if failed else 0)
 

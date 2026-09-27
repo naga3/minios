@@ -7,8 +7,17 @@ typedef unsigned long size_t;
 #define SYS_write      1
 #define SYS_open       2
 #define SYS_close      3
+#define SYS_stat       4
+#define SYS_lstat      6
 #define SYS_ioctl      16
+#define SYS_dup        32
+#define SYS_dup2       33
 #define SYS_uname      63
+#define SYS_getcwd     79
+#define SYS_chdir      80
+#define SYS_mkdir      83
+#define SYS_rmdir      84
+#define SYS_unlink     87
 #define SYS_sysinfo    99
 #define SYS_syslog     103
 #define SYS_mount      165
@@ -16,7 +25,28 @@ typedef unsigned long size_t;
 #define SYS_getdents64 217
 
 #define O_RDONLY    0
+#define O_WRONLY    01
+#define O_CREAT     0100
+#define O_TRUNC     01000
+#define O_APPEND    02000
 #define O_DIRECTORY 0200000
+
+#define EISDIR 21
+
+#define S_IFMT  0170000
+#define S_IFDIR 0040000
+#define S_IFLNK 0120000
+#define S_IFCHR 0020000
+#define S_IFBLK 0060000
+
+struct stat {
+    unsigned long st_dev, st_ino, st_nlink;
+    unsigned int st_mode, st_uid, st_gid, __pad0;
+    unsigned long st_rdev;
+    long st_size, st_blksize, st_blocks;
+    unsigned long st_atime, st_atime_nsec, st_mtime, st_mtime_nsec, st_ctime, st_ctime_nsec;
+    long __unused[3];
+};
 
 static long syscall6(long n, long a, long b, long c, long d, long e, long f) {
     long ret;
@@ -92,11 +122,55 @@ static void print_u_pad(unsigned long v, int width) {
     print_u(v);
 }
 
+static const char *strerror(long err) {
+    switch (-err) {
+    case 1:  return "operation not permitted";
+    case 2:  return "no such file or directory";
+    case 5:  return "I/O error";
+    case 9:  return "bad file descriptor";
+    case 12: return "out of memory";
+    case 13: return "permission denied";
+    case 16: return "busy";
+    case 17: return "already exists";
+    case 20: return "not a directory";
+    case 21: return "is a directory";
+    case 22: return "invalid argument";
+    case 28: return "no space left";
+    case 36: return "name too long";
+    case 38: return "not implemented (kernel option?)";
+    case 39: return "directory not empty";
+    }
+    return 0;
+}
+
+// エラーは標準エラー（fd 2）へ。リダイレクト中でも画面に出る
 static void print_err(const char *what, long err) {
-    print(what); print(": error "); print_u(-err); print("\n");
+    const char *msg = strerror(err);
+    write_all(2, what, slen(what));
+    write_all(2, ": ", 2);
+    if (msg) {
+        write_all(2, msg, slen(msg));
+    } else {
+        write_all(2, "error ", 6);
+        char b[21];
+        int i = sizeof b;
+        unsigned long v = -err;
+        do b[--i] = '0' + v % 10; while (v /= 10);
+        write_all(2, b + i, sizeof b - i);
+    }
+    write_all(2, "\n", 1);
 }
 
 // ---- ファイル ----
+
+// dir + "/" + name を out に組み立てる（dir が "/" や空なら重ねない）
+static void join_path(char *out, size_t size, const char *dir, const char *name) {
+    size_t n = 0;
+    for (const char *p = dir; *p && n < size - 1; p++) out[n++] = *p;
+    if (n > 0 && out[n - 1] != '/' && n < size - 1) out[n++] = '/';
+    for (const char *p = name; *p && n < size - 1; p++) out[n++] = *p;
+    out[n] = 0;
+}
 
 // path を最大 size-1 バイト読んで NUL 終端する。読めたバイト数か、負のエラー番号を返す
 static long read_file(const char *path, char *buf, size_t size) {
