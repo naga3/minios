@@ -23,3 +23,30 @@ NETDEVICES            # ネットワークデバイスのメニュー
 NET_CORE              # ネットワークドライバの基本
 VIRTIO_NET            # virtio NIC（eth0）
 !IPV6                 # IPv6 は使わない（有効だと sit0 トンネルも出てくる）
+
+# ---- 既定で入っているが使わないもの（周 8 で削った） ----
+!VT                   # 画面の仮想コンソール（tty1〜63）。出力はシリアルだけ
+!VGA_CONSOLE          # VGA 画面への文字出力
+!LEGACY_PTYS          # 旧式の疑似端末（ptyXX・ttyXX が数百個）
+!UNIX98_PTYS          # 疑似端末（/dev/ptmx）。使っていない
+!INPUT                # 入力デバイス層。入力はシリアル
+!SERIO                # PS/2 のキーボード・マウス（i8042）
+!HID_SUPPORT          # USB などの HID
+!RD_GZIP              # 圧縮された initramfs の展開。initramfs は非圧縮
+!RD_BZIP2
+!RD_LZMA
+!RD_XZ
+!RD_LZO
+!RD_LZ4
+!RD_ZSTD
+!INET_DIAG            # ss コマンド用のソケット診断
+!WIRELESS             # 無線 LAN
+!WLAN
+!SERIAL_8250_PCI      # PCI のシリアルカード
+!SERIAL_8250_EXAR
+!SERIAL_8250_LPSS
+!SERIAL_8250_MID
+!SERIAL_8250_PERICOM
+!INTEL_MEI            # Intel Management Engine
+!EEPROM_93CX6
+!SWAP                 # スワップ
