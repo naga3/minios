@@ -44,6 +44,9 @@ for dir in goprogs/*/; do
     (cd "$dir" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "../../build/bin/$name" .)
 done
 
+# CA 証明書（HTTPS の検証用）。ホストの束をそのまま使う
+cp /etc/ssl/certs/ca-certificates.crt build/ca-certificates.crt
+
 # initramfs
 $KSRC/usr/gen_init_cpio initramfs.list > build/initramfs.cpio
 

@@ -9,3 +9,8 @@ file /bin/hello build/bin/hello 0755 0 0
 file /bin/false build/bin/false 0755 0 0
 file /bin/spin build/bin/spin 0755 0 0
 file /bin/gohello build/bin/gohello 0755 0 0
+file /bin/fetch build/bin/fetch 0755 0 0
+dir /etc 0755 0 0
+dir /etc/ssl 0755 0 0
+dir /etc/ssl/certs 0755 0 0
+file /etc/ssl/certs/ca-certificates.crt build/ca-certificates.crt 0644 0 0

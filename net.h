@@ -6,7 +6,6 @@
 #define SYS_sendto        44
 #define SYS_recvfrom      45
 #define SYS_setsockopt    54
-#define SYS_clock_gettime 228
 
 #define AF_INET      2
 #define SOCK_DGRAM   2

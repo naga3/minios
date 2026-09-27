@@ -37,6 +37,7 @@ typedef unsigned long size_t;
 #define SYS_getppid    110
 #define SYS_setsid     112
 #define SYS_getdents64 217
+#define SYS_clock_gettime 228
 #define SYS_exit_group 231
 
 #define O_RDONLY    0

@@ -41,6 +41,7 @@ static void mount_all(void) {
 #define NET_ADDR  "10.0.2.15"
 #define NET_MASK  "255.255.255.0"
 #define NET_GW    "10.0.2.2"
+#define NET_DNS   "10.0.2.3"
 
 static unsigned int ip(const char *s) {
     int ok;
@@ -62,6 +63,14 @@ static void net_up(void) {
         if (e >= 0) e = if_up(sock, NET_IFACE);
         if (e >= 0) e = route_add_default(sock, ip(NET_GW));
         status("Network " NET_IFACE " " NET_ADDR " via " NET_GW, e);
+        // ネットワークを設定した init が DNS の設定も書く。無いと Go などは [::1]:53 に問い合わせてしまう
+        static const char resolv[] = "nameserver " NET_DNS "\n";
+        long fd = syscall3(SYS_open, "/etc/resolv.conf", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            write_all(fd, resolv, sizeof resolv - 1);
+            syscall3(SYS_close, fd, 0, 0);
+        }
+        status("DNS " NET_DNS " (/etc/resolv.conf)", fd);
     }
     syscall3(SYS_close, sock, 0, 0);
 }
@@ -88,6 +97,36 @@ static void cmd_uptime(char *args) {
     struct sysinfo si;
     syscall3(SYS_sysinfo, &si, 0, 0);
     print("up "); print_u(si.uptime); print("s\n");
+}
+
+// 1970-01-01 からの日数を年月日に（Howard Hinnant の civil_from_days）
+static void civil_from_days(long z, long *y, unsigned *m, unsigned *d) {
+    z += 719468;
+    long era = (z >= 0 ? z : z - 146096) / 146097;
+    unsigned doe = z - era * 146097;
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153;
+    *d = doy - (153 * mp + 2) / 5 + 1;
+    *m = mp < 10 ? mp + 3 : mp - 9;
+    *y = yoe + era * 400 + (*m <= 2);
+}
+
+static void print_2(unsigned v) {
+    if (v < 10) print("0");
+    print_u(v);
+}
+
+static void cmd_date(char *args) {
+    (void)args;
+    struct { long sec, nsec; } t;
+    syscall3(SYS_clock_gettime, 0 /* CLOCK_REALTIME */, &t, 0);
+    long y;
+    unsigned m, d;
+    civil_from_days(t.sec / 86400, &y, &m, &d);
+    long s = t.sec % 86400;
+    print_u(y); print("-"); print_2(m); print("-"); print_2(d); print(" ");
+    print_2(s / 3600); print(":"); print_2(s / 60 % 60); print(":"); print_2(s % 60); print(" UTC\n");
 }
 
 static void cmd_mem(char *args) {
@@ -410,6 +449,7 @@ static const struct {
     {"help",     cmd_help,     "show this help"},
     {"uname",    cmd_uname,    "kernel name and version"},
     {"uptime",   cmd_uptime,   "seconds since boot"},
+    {"date",     cmd_date,     "current date and time (UTC)"},
     {"mem",      cmd_mem,      "memory usage"},
     {"ps",       cmd_ps,       "list processes"},
     {"dmesg",    cmd_dmesg,    "kernel log"},

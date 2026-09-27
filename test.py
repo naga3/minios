@@ -133,6 +133,9 @@ def basic_commands():
             assert name in out, (name, out)
         assert cmd(vm, "uname").startswith("Linux 7.2.8 "), "uname"
         assert re.fullmatch(r"up \d+s", cmd(vm, "uptime")), "uptime"
+        import datetime
+        guest = datetime.datetime.strptime(cmd(vm, "date"), "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=datetime.timezone.utc)
+        assert abs((guest - datetime.datetime.now(datetime.timezone.utc)).total_seconds()) < 10, guest
         out = cmd(vm, "mem")
         assert re.search(r"total +\d+ KiB", out) and re.search(r"free +\d+ KiB", out), out
         assert cmd(vm, "echo  hello   world ") == "hello world", "echo"
@@ -365,6 +368,57 @@ def go_program():
         assert "goroutines: sum of squares = 30" in out, out
         assert "sleep ok: true" in out, out
         assert out.endswith("file: written by Go"), out
+    finally:
+        vm.kill()
+
+
+class HostHTTPServer:
+    """ホストの 127.0.0.1 に HTTP サーバーを立てる。ゲストからは 10.0.2.2:<port> で見える"""
+    def __enter__(self):
+        import http.server, tempfile, threading, functools
+        self.dir = tempfile.TemporaryDirectory()
+        with open(os.path.join(self.dir.name, "index.html"), "w") as f:
+            f.write("hello from host\n")
+        class Quiet(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+        handler = functools.partial(Quiet, directory=self.dir.name)
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.dir.cleanup()
+
+
+@test
+def http_from_go():
+    with HostHTTPServer() as srv:
+        vm = VM(net=True)
+        try:
+            vm.expect(r"\[ OK \] DNS 10\.0\.2\.3 \(/etc/resolv\.conf\)")
+            vm.expect(PROMPT)
+            assert cmd(vm, "cat /etc/resolv.conf") == "nameserver 10.0.2.3"
+            out = cmd(vm, f"fetch http://10.0.2.2:{srv.port}/index.html", timeout=30)
+            assert out.rstrip() == "HTTP/1.0 200 OK\nhello from host", out
+            out = cmd(vm, f"fetch http://10.0.2.2:{srv.port}/nosuch", timeout=30)
+            assert out.startswith("HTTP/1.0 404 "), out
+        finally:
+            vm.kill()
+
+
+@test
+def internet_dns_and_https():
+    """インターネットに出る。MINIOS_INTERNET=1 のときだけ実行する"""
+    if os.environ.get("MINIOS_INTERNET") != "1":
+        print("  (skipped: set MINIOS_INTERNET=1)")
+        return
+    vm = booted(net=True)
+    try:
+        out = cmd(vm, "fetch https://example.com/", timeout=30)
+        assert out.startswith("HTTP/2.0 200 OK") and "Example Domain" in out, out
     finally:
         vm.kill()
 
