@@ -460,6 +460,39 @@ def trust_policy():
 
 
 @test
+def seccomp_sandbox():
+    """許したシステムコールだけで動かす。sandbox コマンドと、記録の syscalls による実行時の強制"""
+    disk = new_disk()
+    try:
+        vm = booted(disk)
+        try:
+            killed = "[signal 31: used a system call that is not allowed]"
+            out = cmd(vm, "sandbox write,exit_group /bin/hello a")
+            assert out == "hello from pid " + killed, out                         # getpid で止められる
+            assert cmd(vm, "sandbox write,exit_group,getpid,getppid /bin/hello a").endswith(" a env=3")
+            assert cmd(vm, "sandbox write,nosuch /bin/hello") == "sandbox: unknown system call: nosuch\n[exit 2]"
+            # 記録に syscalls があれば、シェルはその分だけを許して実行する
+            cmd(vm, "mkdir /data/bin")
+            cmd(vm, "cat /bin/hello > /data/bin/hi")
+            cmd(vm, "chmod 755 /data/bin/hi")
+            cmd(vm, "trust hi")
+            assert cmd(vm, "hi x").endswith(" x env=3")                          # 人が trust したものは制限しない
+            cmd(vm, "echo syscalls write exit_group getpid getppid >> /data/bin/.grow/hi")
+            assert cmd(vm, "hi x").endswith(" x env=3")
+            assert cmd(vm, "hi x | cat").endswith(" x env=3")
+            cmd(vm, "trust hi")
+            cmd(vm, "echo syscalls write exit_group >> /data/bin/.grow/hi")
+            assert cmd(vm, "hi x") == "hello from pid " + killed
+            cmd(vm, "trust hi")
+            cmd(vm, "echo syscalls write bogus >> /data/bin/.grow/hi")               # 知らない名前なら動かさない
+            assert cmd(vm, "hi x") == "hi: cannot apply the system call restriction in its record\n[exit 126]"
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
+
+
+@test
 def sha256_matches_host():
     """sha256.h の SHA-256 がホストの hashlib と一致する（パディングの境目の長さを中心に）"""
     import tempfile
@@ -633,7 +666,8 @@ def grow_program():
             assert cmd(vm, "sum 1 2 3") == "sum: command not found"
             # y と答えるとインストールされ、出どころが記録される（種を固定しているので、同じ依頼からは同じ結果になる）
             vm.send("grow sum print the sum of the integer arguments\n")
-            vm.expect(r"install to /data/bin/sum\? \[y/N\] ", timeout=300)
+            out = vm.expect(r"install to /data/bin/sum\? \[y/N\] ", timeout=300)
+            assert "--- allowed system calls (enforced with seccomp): exit_group write" in out, out
             vm.send("y\n")
             out = vm.expect(PROMPT)
             assert "installed /data/bin/sum (record: /data/bin/.grow/sum)" in out, out
@@ -643,7 +677,8 @@ def grow_program():
             for key in ("name sum", "request print the sum of the integer arguments",
                         "model qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
                         "model-sha256 cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
-                        "source /data/src/sum.c", "source-sha256 ", "binary-sha256 ", "attempts ", "test ", "installed "):
+                        "source /data/src/sum.c", "source-sha256 ", "binary-sha256 ", "attempts ",
+                        "syscalls exit_group write", "test ", "installed "):
                 assert key in rec, rec
             assert '#include "crt.h"' in cmd(vm, "cat /data/src/sum.c")
             assert cmd(vm, "grow cat x") == "grow: shell builtin cat already exists\n[exit 2]"  # 組み込みや既存の名前は使えない

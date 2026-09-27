@@ -160,6 +160,9 @@ static void write_all(int fd, const char *s, size_t n) {
 
 static void print(const char *s) { write_all(1, s, slen(s)); }
 
+// 文字列の定数を書く。長さはコンパイラが数える（手で数えて 1 文字ずれたことがある。周 26）
+#define write_lit(fd, s) write_all(fd, s, sizeof(s) - 1)
+
 static void print_u(unsigned long v) {
     char b[21];
     int i = sizeof b;
@@ -205,18 +208,18 @@ static const char *strerror(long err) {
 static void print_err(const char *what, long err) {
     const char *msg = strerror(err);
     write_all(2, what, slen(what));
-    write_all(2, ": ", 2);
+    write_lit(2, ": ");
     if (msg) {
         write_all(2, msg, slen(msg));
     } else {
-        write_all(2, "error ", 6);
+        write_lit(2, "error ");
         char b[21];
         int i = sizeof b;
         unsigned long v = -err;
         do b[--i] = '0' + v % 10; while (v /= 10);
         write_all(2, b + i, sizeof b - i);
     }
-    write_all(2, "\n", 1);
+    write_lit(2, "\n");
 }
 
 // ---- ファイル ----

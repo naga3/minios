@@ -26,6 +26,7 @@ import (
 const (
 	llamaBin    = "/bin/llama-completion"
 	ccBin       = "/bin/cc"
+	sandboxBin  = "/bin/sandbox"
 	modelsDir   = "/models"
 	installDir  = "/data/bin"
 	recordDir   = "/data/bin/.grow"
@@ -85,6 +86,7 @@ var (
 	codeRe  = regexp.MustCompile("(?s)```c\\s*\n(.*?)```")
 	testsRe = regexp.MustCompile("(?s)```tests\\s*\n(.*?)```")
 	sysRe   = regexp.MustCompile(`\bSYS_[a-z0-9_]+\b`)
+	callRe  = regexp.MustCompile(`\b([a-z_0-9]+)\s*\(`)
 	undefRe = regexp.MustCompile(`unresolved reference to '(\w+)'|implicit declaration of function '(\w+)'`)
 )
 
@@ -132,6 +134,7 @@ func grow(args []string) int {
 	var code string
 	var tests []testCase
 	var results []testResult
+	var syscalls []string
 	ok := false
 	attempt := 0
 	for attempt = 1; attempt <= maxAttempts && !ok; attempt++ {
@@ -158,7 +161,8 @@ func grow(args []string) int {
 			prompt = retryPrompt(name, request, answer, "The program did not compile:\n"+out+missingFunctionsHint(out))
 			continue
 		}
-		results = runTests(bin, tests)
+		syscalls = syscallsUsed(code)
+		results = runTests(bin, syscalls, tests)
 		failed := 0
 		for _, r := range results {
 			if !r.passed {
@@ -188,7 +192,7 @@ func grow(args []string) int {
 	// 人に見せて承認をもらう
 	fmt.Printf("\n--- %s: %s\n", name, request)
 	fmt.Print(indent(code))
-	fmt.Printf("--- uses system calls: %s\n", strings.Join(syscallsUsed(code), " "))
+	fmt.Printf("--- allowed system calls (enforced with seccomp): %s\n", strings.Join(syscalls, " "))
 	fmt.Println("--- tests:")
 	for _, r := range results {
 		fmt.Printf("    %s => %s  ok\n", argsString(r.tc.args), r.tc.expected)
@@ -197,7 +201,7 @@ func grow(args []string) int {
 		fmt.Println("not installed")
 		return 1
 	}
-	if err := install(name, request, model, code, filepath.Join(workDir, name), attempt, results); err != nil {
+	if err := install(name, request, model, code, filepath.Join(workDir, name), attempt, syscalls, results); err != nil {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
 	}
@@ -316,11 +320,11 @@ func compile(code, bin string) (string, error) {
 }
 
 // テストは 1 件 5 秒まで。出力は前後の空白を無視して比べる（改行の有無などの揺れを吸収する）
-func runTests(bin string, tests []testCase) []testResult {
+func runTests(bin string, syscalls []string, tests []testCase) []testResult {
 	var results []testResult
 	for _, tc := range tests {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		cmd := exec.CommandContext(ctx, bin, tc.args...)
+		cmd := exec.CommandContext(ctx, sandboxBin, append([]string{strings.Join(syscalls, ","), bin}, tc.args...)...)
 		cmd.Stdin = strings.NewReader("")
 		out, err := cmd.CombinedOutput()
 		// cancel より先に調べる。cancel した後の ctx.Err() は、時間切れでなくても nil でなくなる（周 24 で踏んだ）
@@ -329,6 +333,8 @@ func runTests(bin string, tests []testCase) []testResult {
 		got := strings.TrimSpace(string(out))
 		if timedOut {
 			got = "(timed out)"
+		} else if err != nil && strings.Contains(err.Error(), "bad system call") { // SIGSYS: seccomp に止められた
+			got = strings.TrimSpace(got + " (stopped: used a system call that is not allowed)")
 		} else if err != nil && got == "" {
 			got = "(" + err.Error() + ")"
 		}
@@ -337,19 +343,31 @@ func runTests(bin string, tests []testCase) []testResult {
 	return results
 }
 
+// minios の API の関数が使うシステムコール（lib.h の実装に合わせる）
+var apiSyscalls = map[string][]string{
+	"print": {"write"}, "print_u": {"write"}, "print_u_pad": {"write"}, "write_all": {"write"}, "print_err": {"write"},
+	"read_file": {"open", "read", "close"}, "each_dirent": {"open", "getdents64", "close"},
+	"sha256_file": {"open", "read", "close"}, "signal": {"rt_sigaction"},
+}
+
+// ソースから、プログラムが使うシステムコールを導く。crt.h の exit で exit_group は必ず使う。
+// SYS_xxx を直接書いていればそれ、minios の API の関数を呼んでいれば apiSyscalls の分。
+// テストはこの一覧だけを許して（seccomp）実行するので、足りなければテストが落ちる。一覧は実際の動作で裏付けられる
 func syscallsUsed(code string) []string {
-	seen := map[string]bool{}
+	seen := map[string]bool{"exit_group": true}
 	for _, s := range sysRe.FindAllString(code, -1) {
-		seen[s] = true
+		seen[strings.TrimPrefix(s, "SYS_")] = true
+	}
+	for _, m := range callRe.FindAllStringSubmatch(code, -1) {
+		for _, sc := range apiSyscalls[m[1]] {
+			seen[sc] = true
+		}
 	}
 	var list []string
 	for s := range seen {
 		list = append(list, s)
 	}
 	sort.Strings(list)
-	if len(list) == 0 {
-		return []string{"(none directly)"}
-	}
 	return list
 }
 
@@ -359,7 +377,7 @@ func confirm(question string) bool {
 	return strings.TrimSpace(strings.ToLower(line)) == "y"
 }
 
-func install(name, request, model, code, bin string, attempts int, results []testResult) error {
+func install(name, request, model, code, bin string, attempts int, syscalls []string, results []testResult) error {
 	for _, d := range []string{installDir, recordDir, sourceDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
@@ -387,6 +405,7 @@ func install(name, request, model, code, bin string, attempts int, results []tes
 	fmt.Fprintf(&rec, "source-sha256 %s\n", sha256Hex([]byte(code)))
 	fmt.Fprintf(&rec, "binary-sha256 %s\n", sha256Hex(binData))
 	fmt.Fprintf(&rec, "attempts %d\n", attempts)
+	fmt.Fprintf(&rec, "syscalls %s\n", strings.Join(syscalls, " "))
 	for _, r := range results {
 		fmt.Fprintf(&rec, "test %s => %s\n", argsString(r.tc.args), r.tc.expected)
 	}

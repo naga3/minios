@@ -3,6 +3,7 @@
 #pragma once
 #include "boot.h"
 #include "sha256.h"
+#include "seccomp.h"
 
 // ---- コマンド ----
 
@@ -509,9 +510,23 @@ static void write_builtins_file(void) {
 #define TRUST_DIR    "/data/bin"
 #define RECORD_DIR   "/data/bin/.grow"
 
+// 記録の中の "key 値" の行を探し、値の先頭を返す（無ければ 0）。値は改行か NUL で終わる
+static const char *record_value(const char *rec, const char *key) {
+    for (const char *p = rec; *p;) {
+        size_t i = 0;
+        while (key[i] && p[i] == key[i]) i++;
+        if (!key[i] && p[i] == ' ') return p + i + 1;
+        while (*p && *p != '\n') p++;
+        if (*p) p++;
+    }
+    return 0;
+}
+
 // path が /data/bin のプログラムなら、記録（/data/bin/.grow/<名前>）の binary-sha256 と照らし合わせる。
-// 実行してよければ 1。だめなら理由を stderr に出して 0。/bin（OS のイメージ）や明示的な他のパスは調べない
-static int trusted(const char *path) {
+// 実行してよければ 1。だめなら理由を stderr に出して 0。/bin（OS のイメージ）や明示的な他のパスは調べない。
+// 記録に syscalls（許すシステムコールの一覧）があれば、syscalls に写す（無ければ空。人が trust したものは制限しない）
+static int trusted(const char *path, char *syscalls, size_t size) {
+    if (syscalls) syscalls[0] = 0;
     const char *prefix = TRUST_DIR "/";
     size_t n = slen(prefix);
     for (size_t i = 0; i < n; i++)
@@ -527,22 +542,21 @@ static int trusted(const char *path) {
     } else if (sha256_file(path, hex) < 0) {
         why = ": cannot read\n";
     } else {
-        // "binary-sha256 <hex>" の行を探す
-        const char *want = 0;
-        for (const char *p = rec; *p;) {
-            const char *key = "binary-sha256 ";
-            size_t i = 0;
-            while (key[i] && p[i] == key[i]) i++;
-            if (!key[i]) { want = p + i; break; }
-            while (*p && *p != '\n') p++;
-            if (*p) p++;
-        }
+        const char *want = record_value(rec, "binary-sha256");
         int same = want != 0;
         for (int i = 0; same && i < 64; i++) same = want[i] == hex[i];
         if (same && want[64] != '\n' && want[64] != 0) same = 0;
         if (!same) why = ": not trusted (changed since it was installed; the hash does not match the record)\n";
     }
-    if (!why) return 1;
+    if (!why) {
+        const char *sc = record_value(rec, "syscalls");
+        if (sc && syscalls) {
+            size_t k = 0;
+            while (sc[k] && sc[k] != '\n' && k < size - 1) { syscalls[k] = sc[k]; k++; }
+            syscalls[k] = 0;
+        }
+        return 1;
+    }
     write_all(2, name, slen(name));
     write_all(2, why, slen(why));
     return 0;
@@ -618,10 +632,23 @@ static void __attribute__((noreturn)) exec_stage(char *line) {
     char path[256];
     if (!find_program(cmd, path, sizeof path)) {
         write_all(2, cmd, slen(cmd));
-        write_all(2, ": command not found\n", 20);
+        write_lit(2, ": command not found\n");
         syscall3(SYS_exit_group, 127, 0, 0);
     }
-    if (!trusted(path)) syscall3(SYS_exit_group, 126, 0, 0);
+    // 記録に許すシステムコールの一覧があれば、その分だけを許して（seccomp）から exec する
+    char syscalls[512];
+    if (!trusted(path, syscalls, sizeof syscalls)) syscall3(SYS_exit_group, 126, 0, 0);
+    if (syscalls[0]) {
+        const char *bad;
+        size_t bad_len;
+        long e = apply_syscall_filter(syscalls, &bad, &bad_len);
+        if (e < 0) {
+            const char *msg = ": cannot apply the system call restriction in its record\n";
+            write_all(2, cmd, slen(cmd));
+            write_all(2, msg, slen(msg));
+            syscall3(SYS_exit_group, 126, 0, 0);
+        }
+    }
     char *argv[32];
     int argc = 0;
     argv[argc++] = cmd;
@@ -694,7 +721,9 @@ static void pipeline(char **stages, int n) {
         int code = (status >> 8) & 0xff;
         if (code) { print("[exit "); print_u(code); print("]\n"); }
     } else {
-        print("[signal "); print_u(status & 0x7f); print("]\n");
+        print("[signal "); print_u(status & 0x7f);
+        if ((status & 0x7f) == SIGSYS) print(": used a system call that is not allowed");
+        print("]\n");
     }
 }
 
@@ -731,10 +760,10 @@ static void run(char *line) {
         char path[256];
         if (!find_program(first, path, sizeof path)) {
             write_all(2, first, slen(first));
-            write_all(2, ": command not found\n", 20);
+            write_lit(2, ": command not found\n");
             return;
         }
-        if (!trusted(path)) return;  // fork する前に知らせる
+        if (!trusted(path, 0, 0)) return;  // fork する前に知らせる
         pipeline(stages, 1);
         return;
     }
