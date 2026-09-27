@@ -8,3 +8,4 @@ dir /bin 0755 0 0
 file /bin/hello build/bin/hello 0755 0 0
 file /bin/false build/bin/false 0755 0 0
 file /bin/spin build/bin/spin 0755 0 0
+file /bin/gohello build/bin/gohello 0755 0 0

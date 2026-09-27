@@ -355,6 +355,20 @@ def ctrl_c_stops_program():
         vm.kill()
 
 
+@test
+def go_program():
+    """Go の静的バイナリが動く（カーネルに FUTEX・EPOLL・EVENTFD が要る）"""
+    vm = booted()
+    try:
+        out = cmd(vm, "gohello a b", timeout=30)
+        assert re.search(r"^hello from Go go\S+, pid \d+, args \[a b\]$", out, re.M), out
+        assert "goroutines: sum of squares = 30" in out, out
+        assert "sleep ok: true" in out, out
+        assert out.endswith("file: written by Go"), out
+    finally:
+        vm.kill()
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0

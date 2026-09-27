@@ -38,6 +38,12 @@ for src in progs/*.c; do
     strip "build/bin/$name"
 done
 
+# Go の外部プログラム（goprogs/<name>/ → build/bin/<name>）。libc なしの静的バイナリにする
+for dir in goprogs/*/; do
+    name=$(basename "$dir")
+    (cd "$dir" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "../../build/bin/$name" .)
+done
+
 # initramfs
 $KSRC/usr/gen_init_cpio initramfs.list > build/initramfs.cpio
 
