@@ -46,3 +46,4 @@ file /bin/llama-completion build/llama/llama-completion 0755 0 0
 file /licenses/llama.cpp-MIT build/licenses/llama.cpp-MIT 0644 0 0
 file /licenses/cpp-httplib-MIT build/licenses/cpp-httplib-MIT 0644 0 0
 slink /bin/grow gobox 0777 0 0
+file /usr/include/minios/sha256.h sha256.h 0644 0 0

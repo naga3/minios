@@ -14,7 +14,7 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 ./run.sh            # QEMU で起動（シリアル）。Ctrl+C はゲストに届く。QEMU を強制終了するには Ctrl+A → X
 ./run-efi.sh        # UEFI 版を実機と同じ経路（UEFI → FAT 上の BOOTX64.EFI）で起動
 ./run-efi.sh gui    # 画面のウィンドウも開き、USB キーボードで操作する（WSL なら WSLg）
-./test.py           # 自動テスト（28 個）。ローカル LLM のテストは ./fetch-third-party.sh と ./build-models.sh の後。UEFI 版のテストは ./build-efi.sh の後だけ動く
+./test.py           # 自動テスト（30 個）。ローカル LLM のテストは ./fetch-third-party.sh と ./build-models.sh の後。UEFI 版のテストは ./build-efi.sh の後だけ動く
 MINIOS_INTERNET=1 ./test.py internet   # インターネットに出るテスト（DNS、HTTPS）
 ```
 
@@ -37,7 +37,7 @@ minios# shutdown
 | init.c | PID 1。起動処理を呼び、端末ごとにシェルを起動して見守る。孤児を回収する |
 | boot.h | 起動処理: マウント、起動メディアの検出、DHCP でネットワーク、終了時のアンマウント |
 | shell.h | シェル: 組み込みコマンド、リダイレクト、外部プログラムの実行、Ctrl+C |
-| lib.h・net.h・crt.h | libc の代わり（システムコール、文字列、ソケット、DHCP、スタートアップ） |
+| lib.h・net.h・crt.h・sha256.h | libc の代わり（システムコール、文字列、ソケット、DHCP、スタートアップ、SHA-256） |
 | progs/ | C の外部プログラム（hello、spin、orphan、screen など） |
 | goprogs/gobox/ | Go の外部プログラム（fetch、gohello）。1 本にまとめてある |
 | kernel.fragment | tinyconfig に足す（`!` は削る）カーネルオプション。1 行ずつ理由つき |
@@ -62,7 +62,7 @@ disk.img は run.sh が使う永続ディスク（初回に作る。消せば空
 | 層 | 変え方 | 例 |
 |---|---|---|
 | カーネル + init | ソースを変えてビルドし直す | kernel.fragment、init.c・boot.h・shell.h |
-| /data/bin | プログラムを置くだけ | `fetch -o /data/bin/x <URL>; chmod 755 /data/bin/x` |
+| /data/bin | grow で AI に作らせる。または置いて trust する（記録の無いもの・書き換えられたものは実行されない） | `grow sum ...`、`fetch -o /data/bin/x <URL>; chmod 755 /data/bin/x; trust x` |
 | /data/rc | 書くだけ（起動時に実行される） | `echo echo hello > /data/rc` |
 
 ## 実機の USB メモリで試す（未確認）

@@ -2,11 +2,13 @@
 // init（PID 1）が端末ごとに fork して session を呼ぶ
 #pragma once
 #include "boot.h"
+#include "sha256.h"
 
 // ---- コマンド ----
 
 static void cmd_help(char *args);
 static void cmd_exit(char *args);
+static void cmd_trust(char *args);
 static void run(char *line);
 
 static void cmd_uname(char *args) {
@@ -41,16 +43,37 @@ static void print_2(unsigned v) {
     print_u(v);
 }
 
-static void cmd_date(char *args) {
-    (void)args;
+// 今の時刻を "2026-09-28T01:02:03Z" の形で out に書く
+static void utc_now(char out[21]) {
     struct { long sec, nsec; } t;
     syscall3(SYS_clock_gettime, 0 /* CLOCK_REALTIME */, &t, 0);
     long y;
     unsigned m, d;
     civil_from_days(t.sec / 86400, &y, &m, &d);
     long s = t.sec % 86400;
-    print_u(y); print("-"); print_2(m); print("-"); print_2(d); print(" ");
-    print_2(s / 3600); print(":"); print_2(s / 60 % 60); print(":"); print_2(s % 60); print(" UTC\n");
+    unsigned v[6] = {y, m, d, s / 3600, s / 60 % 60, s % 60};
+    char *p = out;
+    for (int i = 0; i < 6; i++) {
+        if (i == 0) {
+            for (int k = 3; k >= 0; k--) p[k] = '0' + v[0] % 10, v[0] /= 10;
+            p += 4;
+        } else {
+            *p++ = "--T::"[i - 1];
+            *p++ = '0' + v[i] / 10;
+            *p++ = '0' + v[i] % 10;
+        }
+    }
+    *p++ = 'Z';
+    *p = 0;
+}
+
+static void cmd_date(char *args) {
+    (void)args;
+    char now[21];
+    utc_now(now);
+    now[10] = ' ';  // "2026-09-28 01:02:03 UTC" の形で出す
+    now[19] = 0;
+    print(now); print(" UTC\n");
 }
 
 static void cmd_mem(char *args) {
@@ -422,6 +445,7 @@ static const struct {
     {"cat",      cmd_cat,      "print files (stdin if none)"},
     {"mkdir",    cmd_mkdir,    "make directories"},
     {"rm",       cmd_rm,       "remove files or empty directories"},
+    {"trust",    cmd_trust,    "trust <name>: allow a program you put in /data/bin"},
     {"chmod",    cmd_chmod,    "chmod <octal-mode> <path>..."},
     {"cd",       cmd_cd,       "change directory"},
     {"pwd",      cmd_pwd,      "print working directory"},
@@ -480,6 +504,75 @@ static void write_builtins_file(void) {
     syscall3(SYS_close, fd, 0, 0);
 }
 
+// ---- 信頼（/data/bin のプログラムは、記録があり、ハッシュが一致するものだけ実行する） ----
+
+#define TRUST_DIR    "/data/bin"
+#define RECORD_DIR   "/data/bin/.grow"
+
+// path が /data/bin のプログラムなら、記録（/data/bin/.grow/<名前>）の binary-sha256 と照らし合わせる。
+// 実行してよければ 1。だめなら理由を stderr に出して 0。/bin（OS のイメージ）や明示的な他のパスは調べない
+static int trusted(const char *path) {
+    const char *prefix = TRUST_DIR "/";
+    size_t n = slen(prefix);
+    for (size_t i = 0; i < n; i++)
+        if (path[i] != prefix[i]) return 1;
+    const char *name = path + n;
+    char rec_path[256], rec[4096], hex[65];
+    size_t k = 0;
+    str_append(rec_path, sizeof rec_path, &k, RECORD_DIR "/");
+    str_append(rec_path, sizeof rec_path, &k, name);
+    const char *why = 0;
+    if (read_file(rec_path, rec, sizeof rec) < 0) {
+        why = ": not trusted (no record; install it with grow, or mark it with trust)\n";
+    } else if (sha256_file(path, hex) < 0) {
+        why = ": cannot read\n";
+    } else {
+        // "binary-sha256 <hex>" の行を探す
+        const char *want = 0;
+        for (const char *p = rec; *p;) {
+            const char *key = "binary-sha256 ";
+            size_t i = 0;
+            while (key[i] && p[i] == key[i]) i++;
+            if (!key[i]) { want = p + i; break; }
+            while (*p && *p != '\n') p++;
+            if (*p) p++;
+        }
+        int same = want != 0;
+        for (int i = 0; same && i < 64; i++) same = want[i] == hex[i];
+        if (same && want[64] != '\n' && want[64] != 0) same = 0;
+        if (!same) why = ": not trusted (changed since it was installed; the hash does not match the record)\n";
+    }
+    if (!why) return 1;
+    write_all(2, name, slen(name));
+    write_all(2, why, slen(why));
+    return 0;
+}
+
+// trust <名前>: 人が自分の責任で /data/bin に置いたプログラムに、記録（今のハッシュ）を付ける
+static void cmd_trust(char *args) {
+    char *name = next_word(&args);
+    if (!name) { print_err("usage: trust <name in /data/bin>", -22); return; }
+    for (char *p = name; *p; p++)
+        if (*p == '/') { print_err("trust: give a name in /data/bin, not a path", -22); return; }
+    char path[256], rec_path[256], hex[65], now[21];
+    size_t n = 0, k = 0;
+    str_append(path, sizeof path, &n, TRUST_DIR "/");
+    str_append(path, sizeof path, &n, name);
+    str_append(rec_path, sizeof rec_path, &k, RECORD_DIR "/");
+    str_append(rec_path, sizeof rec_path, &k, name);
+    long e = sha256_file(path, hex);
+    if (e < 0) { print_err(path, e); return; }
+    syscall3(SYS_mkdir, RECORD_DIR, 0755, 0);
+    long fd = syscall3(SYS_open, rec_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { print_err(rec_path, fd); return; }
+    utc_now(now);
+    const char *parts[] = {"name ", name, "\ntrusted-by human\nbinary-sha256 ", hex, "\ninstalled ", now, "\n"};
+    for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) write_all(fd, parts[i], slen(parts[i]));
+    syscall3(SYS_close, fd, 0, 0);
+    syscall3(SYS_sync, 0, 0, 0);
+    print("trusted "); print(path); print(" sha256 "); print(hex); print("\n");
+}
+
 static int find_builtin(const char *name) {
     for (size_t i = 0; i < NCOMMANDS; i++)
         if (seq(name, commands[i].name)) return i;
@@ -528,6 +621,7 @@ static void __attribute__((noreturn)) exec_stage(char *line) {
         write_all(2, ": command not found\n", 20);
         syscall3(SYS_exit_group, 127, 0, 0);
     }
+    if (!trusted(path)) syscall3(SYS_exit_group, 126, 0, 0);
     char *argv[32];
     int argc = 0;
     argv[argc++] = cmd;
@@ -640,6 +734,7 @@ static void run(char *line) {
             write_all(2, ": command not found\n", 20);
             return;
         }
+        if (!trusted(path)) return;  // fork する前に知らせる
         pipeline(stages, 1);
         return;
     }

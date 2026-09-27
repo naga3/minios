@@ -4,6 +4,7 @@
 使い方: ./test.py            全テスト
         ./test.py boot       名前に boot を含むテストだけ
 """
+import hashlib
 import os
 import re
 import select
@@ -389,6 +390,7 @@ def install_program_on_disk():
             assert cmd(vm, "mkdir /data/bin") == ""
             assert cmd(vm, "cat /bin/hello > /data/bin/hi") == ""
             assert cmd(vm, "chmod 755 /data/bin/hi") == ""
+            assert cmd(vm, "trust hi").startswith("trusted /data/bin/hi sha256 ")
             assert cmd(vm, "hi there").endswith(" there env=3")
             vm.send("shutdown\n")
             assert vm.wait_exit() == 0
@@ -423,6 +425,59 @@ def init_supervises_shells():
         assert not re.search(rf"^ +{child} ", out, re.M), out  # 回収されてゾンビ（Z）が残っていない
     finally:
         vm.kill()
+
+
+@test
+def trust_policy():
+    """/data/bin のプログラムは、記録があり、ハッシュが一致するものだけ実行する"""
+    disk = new_disk()
+    try:
+        vm = booted(disk)
+        try:
+            cmd(vm, "mkdir /data/bin")
+            cmd(vm, "cat /bin/hello > /data/bin/hi")
+            cmd(vm, "chmod 755 /data/bin/hi")
+            refused = "hi: not trusted (no record; install it with grow, or mark it with trust)"
+            assert cmd(vm, "hi x") == refused                  # 名前で呼んでも
+            assert cmd(vm, "hi x | cat") == refused            # パイプの中でも
+            assert cmd(vm, "/data/bin/hi x") == refused        # フルパスでも
+            out = cmd(vm, "trust hi")
+            h = re.fullmatch(r"trusted /data/bin/hi sha256 ([0-9a-f]{64})", out).group(1)
+            assert h == hashlib.sha256(open(f"{ROOT}/build/bin/hello", "rb").read()).hexdigest()  # ホストの計算と一致
+            assert cmd(vm, "hi x").endswith(" x env=3")
+            assert cmd(vm, "hi x | cat").endswith(" x env=3")
+            rec = cmd(vm, "cat /data/bin/.grow/hi")
+            assert re.fullmatch(rf"name hi\ntrusted-by human\nbinary-sha256 {h}\ninstalled \d{{4}}-\d\d-\d\dT\d\d:\d\d:\d\dZ", rec), rec
+            cmd(vm, "cat /bin/false > /data/bin/hi")          # 記録の後に書き換える
+            assert cmd(vm, "hi x") == "hi: not trusted (changed since it was installed; the hash does not match the record)"
+            assert cmd(vm, "hello x").endswith(" x env=3")     # /bin（OS のイメージ）は調べない
+            assert cmd(vm, "trust /x") == "trust: give a name in /data/bin, not a path: invalid argument"
+            assert cmd(vm, "trust nosuch") == "/data/bin/nosuch: no such file or directory"
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
+
+
+@test
+def sha256_matches_host():
+    """sha256.h の SHA-256 がホストの hashlib と一致する（パディングの境目の長さを中心に）"""
+    import tempfile
+    out = subprocess.run(["gcc", "-static", "-nostdlib", "-Os", "-ffreestanding", "-fno-stack-protector",
+                          "-Wno-unused-function", "-o", f"{ROOT}/build/test_sha256", f"{ROOT}/tools/test_sha256.c"],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    with tempfile.TemporaryDirectory() as d:
+        files = []
+        for n in (0, 1, 55, 56, 57, 63, 64, 65, 119, 120, 128, 4097, 100000):
+            path = os.path.join(d, f"f{n}")
+            with open(path, "wb") as f:
+                f.write(os.urandom(n))
+            files.append(path)
+        files.append(f"{ROOT}/build/bin/gobox")
+        out = subprocess.run([f"{ROOT}/build/test_sha256", *files], capture_output=True, text=True, check=True).stdout
+        for line, path in zip(out.splitlines(), files):
+            assert line == f"{hashlib.sha256(open(path, 'rb').read()).hexdigest()}  {path}", (line, path)
 
 
 @test
@@ -517,6 +572,7 @@ def compile_inside():
         try:
             assert cmd(vm, "mkdir /data/bin") == ""
             assert cmd(vm, "cc -o /data/bin/hello2 /usr/share/minios/examples/hello.c") == ""
+            assert cmd(vm, "trust hello2").startswith("trusted /data/bin/hello2 sha256 ")
             assert cmd(vm, "hello2 a b") == "hello, compiled inside minios a b"
             out = cmd(vm, "cc -o /x /nosuch.c")
             assert out == "tcc: error: file '/nosuch.c' not found\n[exit 1]", out
@@ -642,6 +698,7 @@ def install_program_over_network():
                 size = os.path.getsize(f"{ROOT}/build/bin/hello")
                 assert out == f"saved {size} bytes to /data/bin/hi", out
                 assert cmd(vm, "chmod 755 /data/bin/hi") == ""
+                assert cmd(vm, "trust hi").startswith("trusted /data/bin/hi sha256 ")
                 assert cmd(vm, "hi from network").endswith(" from network env=3")
                 # 失敗したときは何も残さない
                 out = cmd(vm, f"fetch -o /data/bin/none {base}/bin/nosuch", timeout=30)
@@ -741,6 +798,7 @@ def efi_usb_stick():
             # プログラムを置いて実行できる（FAT に実行権限は無いが、全ファイルを 755 扱いでマウントしている）
             assert cmd(vm, "cat /bin/hello > /data/bin/hi") == ""
             assert cmd(vm, "chmod 755 /data/bin/hi") == ""
+            assert cmd(vm, "trust hi").startswith("trusted /data/bin/hi sha256 ")
             assert cmd(vm, "hi on stick").endswith(" on stick env=3")
             vm.send("shutdown\n")
             vm.expect(r"Bye\.")
