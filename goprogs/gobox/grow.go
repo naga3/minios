@@ -46,6 +46,8 @@ Rules:
 Available functions (from crt.h):
   void print(const char *s);              // write a string to stdout
   void print_u(unsigned long v);          // write an unsigned number to stdout
+  void print_i(long v);                   // write a signed number to stdout (use this for negative numbers)
+  void print_c(char c);                   // write one character to stdout (print takes a string, not a char)
   void write_all(int fd, const char *s, size_t n);
   size_t slen(const char *s);             // string length
   int seq(const char *a, const char *b);  // 1 if the strings are equal
@@ -81,6 +83,22 @@ x => x
 ` + "```" + `
 `
 
+// 独立したテストを書かせるシステムプロンプト。プログラムは見せず、依頼文だけから書かせる
+// （コードを書いた AI が自分でテストも書くと、コードに合わせたテストになりうる）
+const testerPrompt = `You write test cases for a small command-line program. You cannot see the program; you only know what it should do.
+Each test case is one line: arguments => expected output (exactly what the program prints).
+Arguments are separated by single spaces and cannot contain spaces. Use (none) when there are no arguments.
+Write 3 test cases for THIS program, including at least one edge case. Answer with one fenced block and nothing else.
+Think about what this program prints for each input. Do not copy the example below; it is for a different program.
+
+Example for the request "print how many arguments there are":
+` + "```tests" + `
+a b c => 3
+hello => 1
+(none) => 0
+` + "```" + `
+`
+
 var (
 	nameRe  = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	codeRe  = regexp.MustCompile("(?s)```c\\s*\n(.*?)```")
@@ -96,9 +114,10 @@ type testCase struct {
 }
 
 type testResult struct {
-	tc     testCase
-	got    string
-	passed bool
+	tc          testCase
+	independent bool // コードを見ずに書かれたテストか
+	got         string
+	passed      bool
 }
 
 func grow(args []string) int {
@@ -128,6 +147,17 @@ func grow(args []string) int {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
+	}
+
+	// 先に、コードを見せずに依頼文だけから独立したテストを書かせる
+	fmt.Printf("[tests] writing independent tests with %s ...\n", filepath.Base(model))
+	independent, err := generateIndependentTests(model, name, request)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "grow:", err)
+		return 1
+	}
+	for _, tc := range independent {
+		fmt.Printf("      %s => %s\n", argsString(tc.args), tc.expected)
 	}
 
 	prompt := fmt.Sprintf("Write a program named %s: %s", name, request)
@@ -162,19 +192,21 @@ func grow(args []string) int {
 			continue
 		}
 		syscalls = syscallsUsed(code)
-		results = runTests(bin, syscalls, tests)
+		results = append(runTests(bin, syscalls, tests, false), runTests(bin, syscalls, independent, true)...)
 		failed := 0
 		for _, r := range results {
 			if !r.passed {
 				failed++
 			}
 		}
-		fmt.Printf("      tests: %d/%d passed\n", len(results)-failed, len(results))
+		fmt.Printf("      tests: %d/%d passed (own %d, independent %d)\n", len(results)-failed, len(results), len(tests), len(independent))
 		if failed > 0 {
 			var b strings.Builder
 			for _, r := range results {
 				if !r.passed {
-					fmt.Fprintf(&b, "arguments %q: expected %q but got %q\n", strings.Join(r.tc.args, " "), r.tc.expected, r.got)
+					// テストの書式（=>）と紛れない文章にする。紛れると、AI がこの文面をテストの欄に写してくる（周 27）
+					fmt.Fprintf(&b, "- With the arguments [%s] the program printed [%s], but it must print [%s].%s\n",
+						strings.Join(r.tc.args, " "), r.got, r.tc.expected, testLabel(r))
 				}
 			}
 			fmt.Print(indent(b.String()))
@@ -195,7 +227,7 @@ func grow(args []string) int {
 	fmt.Printf("--- allowed system calls (enforced with seccomp): %s\n", strings.Join(syscalls, " "))
 	fmt.Println("--- tests:")
 	for _, r := range results {
-		fmt.Printf("    %s => %s  ok\n", argsString(r.tc.args), r.tc.expected)
+		fmt.Printf("    %s => %s  ok%s\n", argsString(r.tc.args), r.tc.expected, testLabel(r))
 	}
 	if !*yes && !confirm(fmt.Sprintf("install to %s/%s? [y/N] ", installDir, name)) {
 		fmt.Println("not installed")
@@ -239,13 +271,17 @@ var temperatures = [maxAttempts]string{"0", "0.5", "0.9"}
 
 // 乱数の種は試行回数で固定する。同じ依頼からは同じ結果になり、後から再現できる
 func generate(model, prompt, temp string, seed int) (string, error) {
+	return generateWith(model, systemPrompt, prompt, temp, seed, 800)
+}
+
+func generateWith(model, system, prompt, temp string, seed, maxTokens int) (string, error) {
 	sys := filepath.Join(workDir, "system.txt")
-	if err := os.WriteFile(sys, []byte(systemPrompt), 0o644); err != nil {
+	if err := os.WriteFile(sys, []byte(system), 0o644); err != nil {
 		return "", err
 	}
 	cmd := exec.Command(llamaBin, "-m", model, "-sysf", sys, "-p", prompt,
-		"-st", "--simple-io", "--temp", temp, "--seed", fmt.Sprint(seed), "-n", "800", "-t", fmt.Sprint(runtime.NumCPU()),
-		"--no-display-prompt")
+		"-st", "--simple-io", "--temp", temp, "--seed", fmt.Sprint(seed), "-n", fmt.Sprint(maxTokens),
+		"-t", fmt.Sprint(runtime.NumCPU()), "--no-display-prompt")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
@@ -287,27 +323,40 @@ func parseAnswer(answer string) (string, []testCase, error) {
 	if t == nil {
 		return "", nil, fmt.Errorf("no ```tests block")
 	}
+	tests, err := parseTests(t[1])
+	if err != nil {
+		return "", nil, err
+	}
+	return c[1], tests, nil
+}
+
+// "引数 => 期待する出力" の行を読む
+func parseTests(block string) ([]testCase, error) {
 	var tests []testCase
-	for _, line := range strings.Split(t[1], "\n") {
+	for _, line := range strings.Split(block, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
+		// => の無い行は読み飛ばす（AI は説明や、書き直しを頼んだ文面を混ぜてくることがある）
 		left, right, found := strings.Cut(line, "=>")
 		if !found {
-			return "", nil, fmt.Errorf("test line without =>: %q", line)
+			continue
 		}
-		left = strings.TrimSpace(left)
+		left, right = strings.TrimSpace(left), strings.TrimSpace(right)
 		var args []string
 		if left != "(none)" && left != "" {
 			args = strings.Fields(left)
 		}
-		tests = append(tests, testCase{args: args, expected: strings.TrimSpace(right)})
+		if right == "(none)" { // 「何も出さない」を (none) と書いてくることがある
+			right = ""
+		}
+		tests = append(tests, testCase{args: args, expected: right})
 	}
 	if len(tests) == 0 {
-		return "", nil, fmt.Errorf("no test cases")
+		return nil, fmt.Errorf("no test cases")
 	}
-	return c[1], tests, nil
+	return tests, nil
 }
 
 func compile(code, bin string) (string, error) {
@@ -315,12 +364,42 @@ func compile(code, bin string) (string, error) {
 	if err := os.WriteFile(src, []byte(code), 0o644); err != nil {
 		return "", err
 	}
-	out, err := exec.Command(ccBin, "-o", bin, src).CombinedOutput()
+	// 警告もエラーにする。TinyCC は char をポインタとして渡すような型の誤りを警告だけで通してしまい、実行時に落ちる（周 27）
+	out, err := exec.Command(ccBin, "-Wall", "-Werror", "-o", bin, src).CombinedOutput()
 	return string(out), err
 }
 
 // テストは 1 件 5 秒まで。出力は前後の空白を無視して比べる（改行の有無などの揺れを吸収する）
-func runTests(bin string, syscalls []string, tests []testCase) []testResult {
+func testLabel(r testResult) string {
+	if r.independent {
+		return "  (independent)"
+	}
+	return ""
+}
+
+func generateIndependentTests(model, name, request string) ([]testCase, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		answer, err := generateWith(model, testerPrompt, fmt.Sprintf("The program is named %s. It should: %s", name, request), "0.3", 100+attempt, 300)
+		if err != nil {
+			return nil, err
+		}
+		os.WriteFile(filepath.Join(workDir, fmt.Sprintf("%s.tests%d.txt", name, attempt)), []byte(answer), 0o644)
+		t := testsRe.FindStringSubmatch(answer)
+		if t == nil {
+			lastErr = fmt.Errorf("the tester wrote no ```tests block")
+			continue
+		}
+		tests, err := parseTests(t[1])
+		if err == nil {
+			return tests, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("independent tests: %v", lastErr)
+}
+
+func runTests(bin string, syscalls []string, tests []testCase, independent bool) []testResult {
 	var results []testResult
 	for _, tc := range tests {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -338,14 +417,15 @@ func runTests(bin string, syscalls []string, tests []testCase) []testResult {
 		} else if err != nil && got == "" {
 			got = "(" + err.Error() + ")"
 		}
-		results = append(results, testResult{tc: tc, got: got, passed: got == tc.expected})
+		results = append(results, testResult{tc: tc, independent: independent, got: got, passed: got == tc.expected})
 	}
 	return results
 }
 
 // minios の API の関数が使うシステムコール（lib.h の実装に合わせる）
 var apiSyscalls = map[string][]string{
-	"print": {"write"}, "print_u": {"write"}, "print_u_pad": {"write"}, "write_all": {"write"}, "print_err": {"write"},
+	"print": {"write"}, "print_u": {"write"}, "print_i": {"write"}, "print_c": {"write"}, "print_u_pad": {"write"},
+	"write_all": {"write"}, "print_err": {"write"},
 	"read_file": {"open", "read", "close"}, "each_dirent": {"open", "getdents64", "close"},
 	"sha256_file": {"open", "read", "close"}, "signal": {"rt_sigaction"},
 }
@@ -407,7 +487,11 @@ func install(name, request, model, code, bin string, attempts int, syscalls []st
 	fmt.Fprintf(&rec, "attempts %d\n", attempts)
 	fmt.Fprintf(&rec, "syscalls %s\n", strings.Join(syscalls, " "))
 	for _, r := range results {
-		fmt.Fprintf(&rec, "test %s => %s\n", argsString(r.tc.args), r.tc.expected)
+		key := "test"
+		if r.independent {
+			key = "independent-test"
+		}
+		fmt.Fprintf(&rec, "%s %s => %s\n", key, argsString(r.tc.args), r.tc.expected)
 	}
 	fmt.Fprintf(&rec, "installed %s\n", time.Now().UTC().Format(time.RFC3339))
 	if err := writeFileSync(filepath.Join(recordDir, name), []byte(rec.String()), 0o644); err != nil {

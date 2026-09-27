@@ -659,7 +659,9 @@ def grow_program():
             # 承認で n と答えるとインストールされない
             vm.send("grow sum print the sum of the integer arguments\n")
             out = vm.expect(r"install to /data/bin/sum\? \[y/N\] ", timeout=300)
-            assert "tests: 3/3 passed" in out, out
+            # 独立したテスト（コードを見ずに依頼文だけから書かせたもの）にも通っている。負の数の境界の場合が含まれる
+            assert re.search(r"tests: (\d+)/\1 passed \(own \d+, independent [1-9]\d*\)", out), out
+            assert re.search(r"-1 -2 -3 => -6  ok  \(independent\)", out), out
             vm.send("n\n")
             out = vm.expect(PROMPT)
             assert "not installed" in out, out
@@ -673,12 +675,13 @@ def grow_program():
             assert "installed /data/bin/sum (record: /data/bin/.grow/sum)" in out, out
             assert cmd(vm, "sum 1 2 3") == "6"
             assert cmd(vm, "sum 10 20 12") == "42"
+            assert cmd(vm, "sum 1 -2 3") == "2"
             rec = cmd(vm, "cat /data/bin/.grow/sum")
             for key in ("name sum", "request print the sum of the integer arguments",
                         "model qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
                         "model-sha256 cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
                         "source /data/src/sum.c", "source-sha256 ", "binary-sha256 ", "attempts ",
-                        "syscalls exit_group write", "test ", "installed "):
+                        "syscalls exit_group write", "test ", "independent-test -1 -2 -3 => -6", "installed "):
                 assert key in rec, rec
             assert '#include "crt.h"' in cmd(vm, "cat /data/src/sum.c")
             assert cmd(vm, "grow cat x") == "grow: shell builtin cat already exists\n[exit 2]"  # 組み込みや既存の名前は使えない

@@ -171,6 +171,19 @@ static void print_u(unsigned long v) {
     print(b + i);
 }
 
+// 符号付きの数。grow の AI が符号なしの print_u で負の数を出して、独立したテストに落ちた（周 27）
+static void print_i(long v) {
+    if (v < 0) {
+        print("-");
+        print_u(-(unsigned long)v);
+    } else {
+        print_u(v);
+    }
+}
+
+// 1 文字。grow の AI が print に 1 文字を渡し続けた（周 27）
+static void print_c(char c) { write_all(1, &c, 1); }
+
 // 右寄せで width 桁
 static void print_u_pad(unsigned long v, int width) {
     unsigned long t = v;
