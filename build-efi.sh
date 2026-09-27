@@ -7,14 +7,21 @@ cd "$(dirname "$0")"
 KSRC=linux-7.2.8
 KOUT=$PWD/build/kernel-efi
 
+# kernel.fragment のうち kernel-efi.fragment で指定し直すものを除き、kernel-efi.fragment を足す
+efi_opts=$(sed 's/#.*//' kernel-efi.fragment | awk 'NF {print $1}')
+sed 's/#.*//' kernel.fragment | awk 'NF {print $1}' | while read -r opt; do
+    echo "$efi_opts" | grep -qx "${opt#!}" || echo "$opt"
+done > build/fragment-efi.merged
+echo "$efi_opts" >> build/fragment-efi.merged
+args=$(awk 'NF { if ($1 ~ /^!/) printf "-d %s ", substr($1, 2); else printf "-e %s ", $1 }' build/fragment-efi.merged)
+
 make -C $KSRC O=$KOUT -s tinyconfig
-$KSRC/scripts/config --file $KOUT/.config $(cat build/fragment.args) \
-    $(sed 's/#.*//' kernel-efi.fragment | awk 'NF {printf "-e %s ", $1}') \
-    --set-str CMDLINE "console=ttyS0 loglevel=0" \
+# console は最後に書いたものが /dev/console（init の出力先）になる。起動ログはシリアルと画面の両方に出る
+$KSRC/scripts/config --file $KOUT/.config $args \
+    --set-str CMDLINE "console=tty0 console=ttyS0 loglevel=0" \
     --set-str INITRAMFS_SOURCE "$PWD/build/initramfs.cpio"
 make -C $KSRC O=$KOUT -s olddefconfig
-./check-config.sh kernel.fragment $KOUT/.config
-./check-config.sh kernel-efi.fragment $KOUT/.config
+./check-config.sh build/fragment-efi.merged $KOUT/.config
 make -C $KSRC O=$KOUT -s -j"$(nproc)" bzImage
 
 mkdir -p build/efi/EFI/BOOT

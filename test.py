@@ -20,10 +20,16 @@ class Timeout(Exception):
 
 
 class VM:
-    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, efi=False, extra=()):
+    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, efi=False, usb_kbd=False, extra=()):
         if disk:
             extra = ("-drive", f"file={disk},format=raw,if=virtio", *extra)
         extra = ("-nic", "user,model=virtio-net-pci" if net else "none", *extra)
+        if usb_kbd:
+            extra = ("-device", "qemu-xhci", "-device", "usb-kbd", *extra)
+        # QEMU のモニタ（キー入力の送信、スクリーンショット）を UNIX ソケットで開けておく
+        import tempfile
+        self.mon_dir = tempfile.TemporaryDirectory()
+        self.mon_path = os.path.join(self.mon_dir.name, "mon.sock")
         if efi:
             # 実機と同じ経路: UEFI ファームウェア → FAT ディスク上の BOOTX64.EFI。
             # -no-reboot を付けない。ACPI の電源断が効かなければ再起動を繰り返して終わらないので、それで確かめられる
@@ -42,7 +48,8 @@ class VM:
             boot = ("-m", "64M", "-kernel", f"{ROOT}/build/bzImage", "-initrd", f"{ROOT}/build/initramfs.cpio",
                     "-append", append, "-no-reboot")
         self.p = subprocess.Popen(
-            ["qemu-system-x86_64", *boot, "-display", "none", "-serial", "stdio", "-monitor", "none", *extra],
+            ["qemu-system-x86_64", *boot, "-display", "none", "-serial", "stdio",
+             "-monitor", f"unix:{self.mon_path},server,nowait", *extra],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         self.buf = b""   # まだ expect で消費していない出力
         self.log = b""   # 全出力
@@ -70,11 +77,36 @@ class VM:
                 return clean[:m.end()].decode(errors="replace")
             left = deadline - time.monotonic()
             if left <= 0:
-                raise Timeout(f"expect {pattern!r} timed out")
+                raise Timeout(f"expect {pattern!r} timed out; last output: {clean[-300:]!r}")
             try:
                 self._read(left)
             except EOFError:
                 raise Timeout(f"expect {pattern!r}: VM exited")
+
+    def monitor(self, command):
+        """QEMU のモニタ（HMP）にコマンドを送る"""
+        import socket
+        for _ in range(50):
+            if os.path.exists(self.mon_path):
+                break
+            time.sleep(0.1)
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.connect(self.mon_path)
+            sock.settimeout(5)
+            out = b""
+            while not out.endswith(b"(qemu) "):
+                out += sock.recv(4096)
+            sock.sendall(command.encode() + b"\n")
+            out = b""
+            while not out.endswith(b"(qemu) "):
+                out += sock.recv(4096)
+            return out.decode(errors="replace")
+
+    def type_keys(self, text):
+        """キーボードから打ったことにする（QEMU の sendkey）。英小文字・数字・空白・改行・一部の記号だけ"""
+        names = {" ": "spc", "\n": "ret", ".": "dot", "-": "minus", "/": "slash", "=": "equal"}
+        for ch in text:
+            self.monitor(f"sendkey {names.get(ch, ch)}")
 
     def send(self, s):
         self.p.stdin.write(s.encode())
@@ -105,7 +137,7 @@ def test(fn):
 
 # ---- テスト ----
 
-PROMPT = r"minios# "
+PROMPT = r"(?m)^minios# "  # 行頭だけ。画面の中身（screen の出力）に含まれる "minios# " と取り違えないように
 
 
 def booted(disk=None, net=False):
@@ -493,12 +525,69 @@ def install_program_over_network():
         os.unlink(disk)
 
 
-@test
-def efi_boot():
-    """UEFI 版（build-efi.sh）を OVMF から起動し、ACPI で電源が切れる。イメージが古ければ飛ばす"""
+def efi_image_fresh():
+    """UEFI 版のイメージが最新の initramfs から作られているか。古ければテストを飛ばす"""
     image = f"{ROOT}/build/efi/EFI/BOOT/BOOTX64.EFI"
     if not os.path.exists(image) or os.path.getmtime(image) < os.path.getmtime(f"{ROOT}/build/initramfs.cpio"):
         print("  (skipped: run ./build-efi.sh first)")
+        return False
+    return True
+
+
+def ppm_to_png(src, dst):
+    """QEMU の screendump（PPM）を PNG にする"""
+    import struct, zlib
+    data = open(src, "rb").read()
+    magic, size, _maxval, pixels = data.split(b"\n", 3)
+    assert magic == b"P6"
+    w, h = map(int, size.split())
+    raw = b"".join(b"\x00" + pixels[y * w * 3:(y + 1) * w * 3] for y in range(h))
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff)
+    with open(dst, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+@test
+def efi_screen_and_keyboard():
+    """UEFI 版で、画面（efifb + fbcon）の tty1 にシェルが出て、USB キーボードで操作できる。
+    画面は /dev/vcs1（tty1 の文字の中身）で確かめ、build/screen.png にスクリーンショットを残す"""
+    if not efi_image_fresh():
+        return
+    vm = VM(efi=True, usb_kbd=True)
+    try:
+        vm.expect(r"\[ OK \] Shell on tty1", timeout=120)
+        vm.expect(PROMPT)
+        # 起動直後、QEMU はキーを PS/2 キーボードに送り、USB キーボードの準備ができると USB に切り替える。
+        # 切り替わる瞬間のキーは失われるので、USB キーボードの入力デバイス（3 つ目）が現れてから少し待って打つ
+        for _ in range(100):
+            if "1-1" in cmd(vm, "ls /sys/bus/usb/devices") and cmd(vm, "ls /sys/class/input").count("input") >= 3:
+                break
+            time.sleep(0.2)
+        else:
+            raise AssertionError("USB keyboard not found")
+        time.sleep(0.5)
+        screen = cmd(vm, "screen")
+        assert re.search(r"^\|  minios 0\.10$", screen, re.M) and re.search(r"^\|minios#$", screen, re.M), screen
+        vm.type_keys("echo typed on usb\n")
+        for _ in range(50):
+            screen = cmd(vm, "screen")
+            if re.search(r"^\|minios# echo typed on usb\n\|typed on usb\n\|minios#$", screen, re.M):
+                break
+            time.sleep(0.2)
+        else:
+            raise AssertionError(screen)
+        vm.monitor(f"screendump {ROOT}/build/screen.ppm")
+        ppm_to_png(f"{ROOT}/build/screen.ppm", f"{ROOT}/build/screen.png")
+    finally:
+        vm.kill()
+
+
+@test
+def efi_boot():
+    """UEFI 版（build-efi.sh）を OVMF から起動し、ACPI で電源が切れる。イメージが古ければ飛ばす"""
+    if not efi_image_fresh():
         return
     disk = new_disk()
     try:
@@ -508,9 +597,12 @@ def efi_boot():
             vm.expect(r"\[ OK \] Mounted /data \(/dev/vda\)")
             vm.expect(r"\[ OK \] Network eth0")
             vm.expect(PROMPT)
-            assert cmd(vm, "ls /sys/firmware") == "d        0  efi/\nd        0  acpi/"
-            assert cmd(vm, "ping 10.0.2.2 1", timeout=10).endswith("1 received")
-            assert cmd(vm, "echo from efi > /data/f") == ""
+            out = cmd(vm, "ls /sys/firmware")
+            assert out == "d        0  efi/\nd        0  acpi/", out
+            out = cmd(vm, "ping 10.0.2.2 3", timeout=15)  # 1 回目は ARP を挟むので遅れることがある
+            assert re.search(r"3 sent, [1-3] received$", out), out
+            out = cmd(vm, "echo from efi > /data/f")
+            assert out == "", out
             vm.send("shutdown\n")
             vm.expect(r"Bye\.")
             assert vm.wait_exit(30) == 0

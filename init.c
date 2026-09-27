@@ -658,7 +658,14 @@ static void __attribute__((noreturn)) session(const char *tty, int first) {
         t.c_cc[VSUSP] = 0;
         syscall3(SYS_ioctl, 0, TCSETS, &t);
     }
-    if (first) print("\n  Type 'help' for commands.\n\n");
+    if (first) {
+        // シリアルには init が起動ログを出している。画面の端末では改めてクリアしてバナーを出す
+        if (!seq(tty, "/dev/ttyS0")) {
+            print("\033[2J\033[H");
+            banner();
+        }
+        print("\n  Type 'help' for commands.\n\n");
+    }
 
     // 行編集（エコー、バックスペース）はカーネルの端末（canonical モード）に任せる
     char line[256];
@@ -709,14 +716,21 @@ void _start(void) {
         source_file("/data/rc", 1);
     }
 
-    long pids[NTERMINALS] = {0}, started[NTERMINALS] = {0};
+    // 起動メッセージを出し終えてからシェルを起動する。先に起動すると、シェルのプロンプトの後に
+    // init のメッセージが割り込むことがある（シェルと init は同じシリアルに書くため）
+    int present[NTERMINALS] = {0};
     for (size_t i = 0; i < NTERMINALS; i++) {
         if (syscall3(SYS_stat, terminals[i], &st, 0) < 0) continue;
+        present[i] = 1;
         char what[64] = "Shell on ";
         size_t n = slen(what);
         for (const char *p = terminals[i] + 5; *p && n < sizeof what - 1; p++) what[n++] = *p;  // "/dev/" を除く
         what[n] = 0;
         status(what, 0);
+    }
+    long pids[NTERMINALS] = {0}, started[NTERMINALS] = {0};
+    for (size_t i = 0; i < NTERMINALS; i++) {
+        if (!present[i]) continue;
         pids[i] = start_session(terminals[i], 1);
         started[i] = now_sec();
     }
