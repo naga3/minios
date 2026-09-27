@@ -26,6 +26,7 @@ int main(int argc, char **argv, char **envp) {
     print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
     banner();
     mount_all();
+    write_builtins_file();
     net_up();
     // 永続ディスクの起動スクリプト。OS をビルドし直さずに起動時の振る舞いを変えられる
     struct stat st;

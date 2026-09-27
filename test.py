@@ -151,7 +151,9 @@ def test(fn):
 
 # ---- テスト ----
 
-PROMPT = r"(?m)^minios# "  # 行頭だけ。画面の中身（screen の出力）に含まれる "minios# " と取り違えないように
+# 入力を待っているとき、最後に出ているのは必ずプロンプト。出力の最後が "minios# " で終わっていればプロンプトとみなす。
+# 行頭で判定すると、改行せずに終わるプログラムの後のプロンプトを見逃す。途中で判定すると、画面の中身（screen の出力）と取り違える
+PROMPT = r"minios# \Z"
 
 
 def booted(disk=None, net=False, models=False):
@@ -167,8 +169,11 @@ def cmd(vm, line, timeout=15):
     vm.send(line + "\n")
     out = vm.expect(PROMPT, timeout)
     out = out.replace("\r\n", "\n")
-    lines = out.split("\n")
-    return "\n".join(lines[1:-1])  # 先頭はエコー、末尾はプロンプト
+    out = out[:-len("minios# ")]          # 末尾のプロンプト
+    lines = out.split("\n")[1:]          # 先頭はエコーした行
+    if lines and lines[-1] == "":         # 改行で終わっていれば、その後ろの空の行
+        lines.pop()
+    return "\n".join(lines)
 
 
 @test
@@ -533,6 +538,9 @@ def compile_inside():
 @test
 def local_llm():
     """OS の中でローカル LLM（llama.cpp + Qwen2.5-Coder-1.5B）が、全部の CPU を使って動く"""
+    if not os.path.exists(f"{ROOT}/build/models.img"):
+        print("  (skipped: run ./fetch-third-party.sh and ./build-models.sh first)")
+        return
     vm = VM(models=True)
     try:
         vm.expect(r"\[ OK \] Mounted /models \(/dev/vda, read-only\)")
@@ -550,13 +558,54 @@ def local_llm():
 
 
 @test
+def grow_program():
+    """OS の中のローカル LLM がプログラムを書き、コンパイルとテストを通して、人の承認を得てから /data/bin に入れる"""
+    if not os.path.exists(f"{ROOT}/build/models.img"):
+        print("  (skipped: run ./fetch-third-party.sh and ./build-models.sh first)")
+        return
+    disk = new_disk()
+    try:
+        vm = booted(disk, models=True)
+        try:
+            # 承認で n と答えるとインストールされない
+            vm.send("grow sum print the sum of the integer arguments\n")
+            out = vm.expect(r"install to /data/bin/sum\? \[y/N\] ", timeout=300)
+            assert "tests: 3/3 passed" in out, out
+            vm.send("n\n")
+            out = vm.expect(PROMPT)
+            assert "not installed" in out, out
+            assert cmd(vm, "sum 1 2 3") == "sum: command not found"
+            # y と答えるとインストールされ、出どころが記録される（種を固定しているので、同じ依頼からは同じ結果になる）
+            vm.send("grow sum print the sum of the integer arguments\n")
+            vm.expect(r"install to /data/bin/sum\? \[y/N\] ", timeout=300)
+            vm.send("y\n")
+            out = vm.expect(PROMPT)
+            assert "installed /data/bin/sum (record: /data/bin/.grow/sum)" in out, out
+            assert cmd(vm, "sum 1 2 3") == "6"
+            assert cmd(vm, "sum 10 20 12") == "42"
+            rec = cmd(vm, "cat /data/bin/.grow/sum")
+            for key in ("name sum", "request print the sum of the integer arguments",
+                        "model qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+                        "model-sha256 cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
+                        "source /data/src/sum.c", "source-sha256 ", "binary-sha256 ", "attempts ", "test ", "installed "):
+                assert key in rec, rec
+            assert '#include "crt.h"' in cmd(vm, "cat /data/src/sum.c")
+            assert cmd(vm, "grow cat x") == "grow: shell builtin cat already exists\n[exit 2]"  # 組み込みや既存の名前は使えない
+            assert cmd(vm, "grow grep x") == "grow: /bin/grep already exists\n[exit 2]"
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
+
+
+@test
 def gobox_links():
     """Go のプログラムは gobox 1 本にまとめ、/bin の名前はシンボリックリンク"""
     vm = booted()
     try:
         out = cmd(vm, "ls /bin")
         assert re.search(r"^l +\d+  fetch$", out, re.M) and re.search(r"^l +\d+  gohello$", out, re.M), out
-        assert cmd(vm, "gobox") == "usage: gobox <command> [args...]\ncommands: [fetch gohello]\n[exit 2]"
+        assert cmd(vm, "gobox") == "usage: gobox <command> [args...]\ncommands: [fetch gohello grow]\n[exit 2]"
         assert cmd(vm, "gobox gohello x", timeout=30).startswith("hello from Go ")
         assert cmd(vm, "fetch") == "usage: fetch [-o path] <url>\n[exit 2]"
     finally:

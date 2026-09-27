@@ -12,6 +12,7 @@ import (
 
 var commands = map[string]func(args []string) int{
 	"gohello": gohello,
+	"grow":    grow,
 	"fetch":   fetch,
 }
 

@@ -468,6 +468,18 @@ static int find_program(const char *cmd, char *out, size_t size) {
     return 0;
 }
 
+// 組み込みコマンドの名前を /etc/builtins に 1 行ずつ書く（init が起動時に呼ぶ）。
+// 組み込みは /bin などにファイルが無いので、grow などのプログラムが「その名前は使われている」と知る手段がこれしかない
+static void write_builtins_file(void) {
+    long fd = syscall3(SYS_open, "/etc/builtins", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    for (size_t i = 0; i < NCOMMANDS; i++) {
+        write_all(fd, commands[i].name, slen(commands[i].name));
+        write_all(fd, "\n", 1);
+    }
+    syscall3(SYS_close, fd, 0, 0);
+}
+
 static int find_builtin(const char *name) {
     for (size_t i = 0; i < NCOMMANDS; i++)
         if (seq(name, commands[i].name)) return i;
