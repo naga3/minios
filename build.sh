@@ -27,3 +27,9 @@ strip build/init
 
 # initramfs
 $KSRC/usr/gen_init_cpio initramfs.list > build/initramfs.cpio
+
+# 永続ディスク（初回だけ作る。中身を消したいときは disk.img を消す）
+if [ ! -f disk.img ]; then
+    truncate -s 8M disk.img
+    mkfs.minix -3 disk.img >/dev/null
+fi

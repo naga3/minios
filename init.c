@@ -1,27 +1,44 @@
 // minios の PID 1。起動メッセージを出し、コマンドを受け付ける
 #include "lib.h"
 
-#define VERSION "0.4"
+#define VERSION "0.5"
 
 static void banner(void) {
     struct utsname u;
     syscall3(SYS_uname, &u, 0, 0);
-    print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
     print("\n  \033[1;32mminios\033[0m " VERSION "\n");
     print("  kernel: "); print(u.sysname); print(" "); print(u.release); print(" "); print(u.machine); print("\n\n");
-    print("  Type 'help' for commands.\n\n");
 }
 
-// 起動時にカーネルの疑似ファイルシステムをマウントする
-static void mount_all(void) {
-    static const struct { const char *src, *dir, *type; } mounts[] = {
-        {"proc",  "/proc", "proc"},
-        {"sysfs", "/sys",  "sysfs"},
-    };
-    for (size_t i = 0; i < sizeof mounts / sizeof mounts[0]; i++) {
-        long r = syscall6(SYS_mount, (long)mounts[i].src, (long)mounts[i].dir, (long)mounts[i].type, 0, 0, 0);
-        if (r < 0) print_err(mounts[i].dir, r);
+static void status(const char *what, long err) {
+    if (err < 0) {
+        print("  [\033[31mFAIL\033[0m] "); print(what); print(": "); print(strerror(err) ? strerror(err) : "error"); print("\n");
+    } else {
+        print("  [ \033[32mOK\033[0m ] "); print(what); print("\n");
     }
+}
+
+static long mount(const char *src, const char *dir, const char *type) {
+    return syscall6(SYS_mount, (long)src, (long)dir, (long)type, 0, 0, 0);
+}
+
+// 起動時のマウント。/data は永続ディスク（/dev/vda、minix）。無ければメモリだけで動く
+static void mount_all(void) {
+    status("Mounted /proc", mount("proc", "/proc", "proc"));
+    status("Mounted /sys", mount("sysfs", "/sys", "sysfs"));
+    status("Mounted /dev", mount("devtmpfs", "/dev", "devtmpfs"));
+    struct stat st;
+    if (syscall3(SYS_stat, "/dev/vda", &st, 0) < 0) {
+        print("  [ -- ] No disk: /data is not persistent\n");
+        return;
+    }
+    status("Mounted /data (/dev/vda)", mount("/dev/vda", "/data", "minix"));
+}
+
+// 書き込み待ちのデータをディスクへ書き出し、/data を外す
+static void unmount_all(void) {
+    syscall3(SYS_sync, 0, 0, 0);
+    syscall3(SYS_umount2, "/data", 0, 0);
 }
 
 // ---- コマンド ----
@@ -205,8 +222,41 @@ static void cmd_clear(char *args) {
     print("\033[2J\033[H");
 }
 
+static void cmd_sync(char *args) {
+    (void)args;
+    syscall3(SYS_sync, 0, 0, 0);
+}
+
+// /proc/mounts の各行（"src dir type opts ..."）について容量を出す
+static void cmd_df(char *args) {
+    (void)args;
+    static char buf[4096];
+    long n = read_file("/proc/mounts", buf, sizeof buf);
+    if (n < 0) { print_err("/proc/mounts", n); return; }
+    print("MOUNT      TYPE        SIZE KiB   USED KiB\n");
+    char *line = buf;
+    while (*line) {
+        char *end = line;
+        while (*end && *end != '\n') end++;
+        if (*end) *end++ = 0;
+        char *rest = line;
+        next_word(&rest);
+        char *dir = next_word(&rest), *type = next_word(&rest);
+        line = end;
+        struct statfs f;
+        if (!dir || !type || syscall3(SYS_statfs, dir, &f, 0) < 0 || f.f_blocks == 0) continue;
+        unsigned long total = f.f_blocks * f.f_bsize / 1024, used = (f.f_blocks - f.f_bfree) * f.f_bsize / 1024;
+        print(dir);
+        for (size_t i = slen(dir); i < 11; i++) print(" ");
+        print(type);
+        for (size_t i = slen(type); i < 9; i++) print(" ");
+        print_u_pad(total, 11); print_u_pad(used, 11); print("\n");
+    }
+}
+
 static void cmd_shutdown(char *args) {
     (void)args;
+    unmount_all();
     print("Bye.\n");
     restart();
 }
@@ -229,6 +279,8 @@ static const struct {
     {"rm",       cmd_rm,       "remove files or empty directories"},
     {"cd",       cmd_cd,       "change directory"},
     {"pwd",      cmd_pwd,      "print working directory"},
+    {"df",       cmd_df,       "disk usage"},
+    {"sync",     cmd_sync,     "flush writes to disk"},
     {"echo",     cmd_echo,     "print arguments (cmd > file, >> to append)"},
     {"clear",    cmd_clear,    "clear the screen"},
     {"shutdown", cmd_shutdown, "power off (exit QEMU)"},
@@ -282,8 +334,10 @@ static void run(char *line) {
 }
 
 void _start(void) {
-    mount_all();
+    print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
     banner();
+    mount_all();
+    print("\n  Type 'help' for commands.\n\n");
 
     // 行編集（エコー、バックスペース）はカーネルの端末（canonical モード）に任せる
     char line[256];

@@ -20,7 +20,10 @@ typedef unsigned long size_t;
 #define SYS_unlink     87
 #define SYS_sysinfo    99
 #define SYS_syslog     103
+#define SYS_statfs     137
+#define SYS_sync       162
 #define SYS_mount      165
+#define SYS_umount2    166
 #define SYS_reboot     169
 #define SYS_getdents64 217
 
@@ -139,6 +142,7 @@ static const char *strerror(long err) {
     case 36: return "name too long";
     case 38: return "not implemented (kernel option?)";
     case 39: return "directory not empty";
+    case 116: return "stale file handle (filesystem damaged?)";
     }
     return 0;
 }
@@ -226,6 +230,13 @@ struct sysinfo {
     unsigned long totalhigh, freehigh;
     unsigned int mem_unit;
     char _f[20 - 2 * sizeof(long) - sizeof(int)];
+};
+
+struct statfs {
+    long f_type, f_bsize;
+    unsigned long f_blocks, f_bfree, f_bavail, f_files, f_ffree;
+    int f_fsid[2];
+    long f_namelen, f_frsize, f_flags, f_spare[4];
 };
 
 // ---- 電源 ----

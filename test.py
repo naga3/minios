@@ -20,7 +20,9 @@ class Timeout(Exception):
 
 
 class VM:
-    def __init__(self, append="console=ttyS0 loglevel=0", extra=()):
+    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, extra=()):
+        if disk:
+            extra = ("-drive", f"file={disk},format=raw,if=virtio", *extra)
         self.p = subprocess.Popen(
             ["qemu-system-x86_64", "-m", "64M",
              "-kernel", f"{ROOT}/build/bzImage",
@@ -93,9 +95,9 @@ def test(fn):
 PROMPT = r"minios# "
 
 
-def booted():
+def booted(disk=None):
     """起動してプロンプトが出た VM を返す"""
-    vm = VM()
+    vm = VM(disk=disk)
     vm.expect(r"kernel: Linux \S+ x86_64")
     vm.expect(PROMPT)
     return vm
@@ -182,6 +184,73 @@ def files_and_redirect():
         assert re.search(r"^c +0  console$", cmd(vm, "ls /dev"), re.M)
     finally:
         vm.kill()
+
+
+def new_disk():
+    """空の minix ディスクイメージを一時ファイルに作ってパスを返す"""
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".img")
+    os.close(fd)
+    os.truncate(path, 8 << 20)
+    subprocess.run(["mkfs.minix", "-3", path], check=True, capture_output=True)
+    return path
+
+
+@test
+def no_disk():
+    vm = VM()
+    try:
+        vm.expect(r"No disk: /data is not persistent")
+        vm.expect(PROMPT)
+        assert not re.search(r"^/data ", cmd(vm, "df"), re.M)
+    finally:
+        vm.kill()
+
+
+@test
+def disk_persists_across_reboot():
+    disk = new_disk()
+    try:
+        vm = VM(disk=disk)
+        try:
+            vm.expect(r"\[ OK \] Mounted /dev\s")
+            vm.expect(r"\[ OK \] Mounted /data \(/dev/vda\)")
+            vm.expect(PROMPT)
+            assert re.search(r"^/data +minix +\d+ +\d+$", cmd(vm, "df"), re.M)
+            assert cmd(vm, "echo persistent > /data/note") == ""
+            assert cmd(vm, "mkdir /data/dir") == ""
+            vm.send("shutdown\n")
+            vm.expect(r"Bye\.")
+            assert vm.wait_exit() == 0
+        finally:
+            vm.kill()
+        vm = booted(disk)
+        try:
+            assert cmd(vm, "cat /data/note") == "persistent"
+            assert re.search(r"^d +\d+  dir/$", cmd(vm, "ls /data"), re.M)
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
+
+
+@test
+def sync_survives_power_loss():
+    disk = new_disk()
+    try:
+        vm = booted(disk)
+        try:
+            cmd(vm, "echo hello > /data/f")
+            cmd(vm, "sync")
+        finally:
+            vm.kill()  # sync の後に電源断
+        vm = booted(disk)
+        try:
+            assert cmd(vm, "cat /data/f") == "hello"
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
 
 
 def main():

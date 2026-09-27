@@ -8,3 +8,12 @@ BLK_DEV_INITRD        # initramfs を読む
 BINFMT_ELF            # ELF 実行ファイルを起動する
 PROC_FS               # /proc（プロセス情報）
 SYSFS                 # /sys（デバイス情報）
+BLOCK                 # ブロックデバイス層
+BLK_DEV               # ブロックデバイスドライバのメニュー
+PCI                   # virtio デバイスは PCI にぶら下がる
+VIRTIO_MENU           # virtio ドライバのメニュー
+VIRTIO_PCI            # virtio の PCI トランスポート
+VIRTIO_BLK            # virtio ディスク（/dev/vda）
+DEVTMPFS              # /dev にデバイスノードを自動で作る
+MISC_FILESYSTEMS      # その他のファイルシステムのメニュー
+MINIX_FS              # 永続ディスクのファイルシステム。ext4 より 150KB 以上小さい
