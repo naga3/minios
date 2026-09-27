@@ -15,3 +15,4 @@ file /etc/ssl/certs/ca-certificates.crt build/ca-certificates.crt 0644 0 0
 file /bin/gobox build/bin/gobox 0755 0 0
 slink /bin/gohello gobox 0777 0 0
 slink /bin/fetch gobox 0777 0 0
+file /bin/orphan build/bin/orphan 0755 0 0

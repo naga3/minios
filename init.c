@@ -2,7 +2,7 @@
 #include "lib.h"
 #include "net.h"
 
-#define VERSION "0.9"
+#define VERSION "0.10"
 
 static void banner(void) {
     struct utsname u;
@@ -84,6 +84,7 @@ static void unmount_all(void) {
 // ---- コマンド ----
 
 static void cmd_help(char *args);
+static void cmd_exit(char *args);
 static void run(char *line);
 
 static void cmd_uname(char *args) {
@@ -501,6 +502,7 @@ static const struct {
     {"source",   cmd_source,   "run commands from a file"},
     {"echo",     cmd_echo,     "print arguments (cmd > file, >> to append)"},
     {"clear",    cmd_clear,    "clear the screen"},
+    {"exit",     cmd_exit,     "end this shell (a new one starts)"},
     {"shutdown", cmd_shutdown, "power off (exit QEMU)"},
 };
 #define NCOMMANDS (sizeof commands / sizeof commands[0])
@@ -551,9 +553,9 @@ static void spawn(char *cmd, char *args) {
     while (argc < 31 && (w = next_word(&args))) argv[argc++] = w;
     argv[argc] = 0;
 
-    // 子を端末の前面に立たせるのは親（init）の仕事。親が init のプロセスグループは「孤児」扱いで、
-    // 子が自分で TIOCSPGRP すると EIO になるため。切り替えが済むまで子をパイプで待たせる。
-    // 前面を取り戻すとき init は背景にいるので、SIGTTOU を無視しておく（setup_tty）
+    // 子を端末の前面に立たせるのはシェルの仕事。子が自分で TIOCSPGRP すると、
+    // 孤児のプロセスグループ扱いで EIO になることがあるため。切り替えが済むまで子をパイプで待たせる。
+    // 前面を取り戻すときシェルは背景にいるので、SIGTTOU を無視しておく（session）
     int sync_pipe[2];
     long e = syscall3(SYS_pipe, sync_pipe, 0, 0);
     if (e < 0) { print_err("pipe", e); return; }
@@ -565,7 +567,10 @@ static void spawn(char *cmd, char *args) {
         char c;
         syscall3(SYS_read, sync_pipe[0], &c, 1);  // 親が閉じると 0 が返る
         syscall3(SYS_close, sync_pipe[0], 0, 0);
-        signal(SIGTTOU, SIG_DFL);  // 無視の設定は exec を越えて引き継がれるので戻す
+        // シェルが無視しているシグナルは exec を越えて引き継がれるので戻す
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGTTOU, SIG_DFL);
         e = syscall3(SYS_execve, path, argv, child_env);
         print_err(path, e);
         syscall3(SYS_exit_group, 127, 0, 0);
@@ -576,8 +581,8 @@ static void spawn(char *cmd, char *args) {
     syscall3(SYS_close, sync_pipe[1], 0, 0);
     int status = 0;
     long r = syscall6(SYS_wait4, pid, (long)&status, 0, 0, 0, 0);
-    int self = 1;
-    syscall3(SYS_ioctl, 0, TIOCSPGRP, &self);  // 前面を init に戻す
+    int self = syscall3(SYS_getpid, 0, 0, 0);
+    syscall3(SYS_ioctl, 0, TIOCSPGRP, &self);  // 前面をシェルに戻す
     if (r < 0) { print_err("wait4", r); return; }
     if ((status & 0x7f) == 0) {
         int code = (status >> 8) & 0xff;
@@ -623,39 +628,37 @@ static void run(char *line) {
     syscall3(SYS_close, saved, 0, 0);
 }
 
-// init を新しいセッションのリーダーにし、端末を制御端末にする。
-// これで Ctrl+C が前面のプロセスグループへの SIGINT になる。
-// /dev/console は制御端末になれないので、実体の /dev/ttyS0 を開き直して fd 0〜2 にする（/dev のマウント後に呼ぶ）。
+// ---- シェル（端末ごとのセッション） ----
+
+#define SYS_prctl   157
+#define PR_SET_NAME 15
+
+static void cmd_exit(char *args) {
+    (void)args;
+    syscall3(SYS_exit_group, 0, 0, 0);
+}
+
+// 端末 tty で対話するシェル。init が端末ごとに fork して起動し、終わったら起動し直す。
+// 新しいセッションのリーダーになり、端末を制御端末にする。これで Ctrl+C が前面のプロセスグループへの SIGINT になる。
+// シェル自身は Ctrl+C（SIGINT）と Ctrl+\（SIGQUIT）を無視する。プロンプトで押したときに前面にいるのはシェルなので。
 // ジョブ制御は作らないので Ctrl+Z（SIGTSTP）は無効にする。止まった子を待ち続けてしまうため
-static void setup_tty(void) {
+static void __attribute__((noreturn)) session(const char *tty, int first) {
+    syscall3(SYS_prctl, PR_SET_NAME, "sh", 0);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
     signal(SIGTTOU, SIG_IGN);
     syscall3(SYS_setsid, 0, 0, 0);
-    long fd = syscall3(SYS_open, "/dev/ttyS0", O_RDWR, 0);
-    if (fd < 0) { status("Terminal /dev/ttyS0 (Ctrl+C disabled)", fd); return; }
+    long fd = syscall3(SYS_open, tty, O_RDWR, 0);
+    if (fd < 0) syscall3(SYS_exit_group, 1, 0, 0);
     for (int i = 0; i < 3; i++) syscall3(SYS_dup2, fd, i, 0);
     if (fd > 2) syscall3(SYS_close, fd, 0, 0);
-    long e = syscall3(SYS_ioctl, 0, TIOCSCTTY, 0);
-    if (e < 0) status("Terminal /dev/ttyS0 (Ctrl+C disabled)", e);
+    syscall3(SYS_ioctl, 0, TIOCSCTTY, 0);
     struct termios t;
     if (syscall3(SYS_ioctl, 0, TCGETS, &t) >= 0) {
         t.c_cc[VSUSP] = 0;
         syscall3(SYS_ioctl, 0, TCSETS, &t);
     }
-}
-
-void _start(void) {
-    print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
-    banner();
-    mount_all();
-    setup_tty();
-    net_up();
-    // 永続ディスクの起動スクリプト。OS をビルドし直さずに起動時の振る舞いを変えられる
-    struct stat st;
-    if (syscall3(SYS_stat, "/data/rc", &st, 0) >= 0) {
-        status("Running /data/rc", 0);
-        source_file("/data/rc", 1);
-    }
-    print("\n  Type 'help' for commands.\n\n");
+    if (first) print("\n  Type 'help' for commands.\n\n");
 
     // 行編集（エコー、バックスペース）はカーネルの端末（canonical モード）に任せる
     char line[256];
@@ -665,13 +668,77 @@ void _start(void) {
         if (n < 0) {
             // 端末が読めない（前面を取られたままなど）。プロンプトを連打しないよう 1 秒待つ
             print_err("read", n);
-            struct { long sec, nsec; } t = {1, 0};
-            syscall3(SYS_nanosleep, &t, 0, 0);
+            struct { long sec, nsec; } ts = {1, 0};
+            syscall3(SYS_nanosleep, &ts, 0, 0);
             continue;
         }
-        if (n == 0) { print("\n"); continue; }  // Ctrl+D
+        if (n == 0) { print("\n"); syscall3(SYS_exit_group, 0, 0, 0); }  // Ctrl+D で終わる。init が起動し直す
         line[n] = 0;
         if (line[n - 1] == '\n') line[n - 1] = 0;
         run(line);
+    }
+}
+
+// ---- init（PID 1） ----
+
+// シェルを動かす端末。無いもの（画面の無いカーネルの tty1 など）は飛ばす
+static const char *const terminals[] = {"/dev/ttyS0", "/dev/tty1"};
+#define NTERMINALS (sizeof terminals / sizeof terminals[0])
+
+static long now_sec(void) {
+    struct { long sec, nsec; } t;
+    syscall3(SYS_clock_gettime, 1 /* CLOCK_MONOTONIC */, &t, 0);
+    return t.sec;
+}
+
+static long start_session(const char *tty, int first) {
+    long pid = syscall3(SYS_fork, 0, 0, 0);
+    if (pid == 0) session(tty, first);
+    return pid;
+}
+
+void _start(void) {
+    print("\033[2J\033[H");  // 画面クリア + カーソルを左上へ
+    banner();
+    mount_all();
+    net_up();
+    // 永続ディスクの起動スクリプト。OS をビルドし直さずに起動時の振る舞いを変えられる
+    struct stat st;
+    if (syscall3(SYS_stat, "/data/rc", &st, 0) >= 0) {
+        status("Running /data/rc", 0);
+        source_file("/data/rc", 1);
+    }
+
+    long pids[NTERMINALS] = {0}, started[NTERMINALS] = {0};
+    for (size_t i = 0; i < NTERMINALS; i++) {
+        if (syscall3(SYS_stat, terminals[i], &st, 0) < 0) continue;
+        char what[64] = "Shell on ";
+        size_t n = slen(what);
+        for (const char *p = terminals[i] + 5; *p && n < sizeof what - 1; p++) what[n++] = *p;  // "/dev/" を除く
+        what[n] = 0;
+        status(what, 0);
+        pids[i] = start_session(terminals[i], 1);
+        started[i] = now_sec();
+    }
+
+    // あとは子プロセスの回収だけ。親が先に終わった孤児も PID 1 の子になるので、ここで回収する。
+    // シェルが終わったら起動し直す（getty と同じ）。すぐ終わるのを繰り返すなら 1 秒待つ
+    for (;;) {
+        int status_ = 0;
+        long pid = syscall6(SYS_wait4, -1, (long)&status_, 0, 0, 0, 0);
+        if (pid < 0) {
+            struct { long sec, nsec; } ts = {1, 0};
+            syscall3(SYS_nanosleep, &ts, 0, 0);
+            continue;
+        }
+        for (size_t i = 0; i < NTERMINALS; i++) {
+            if (pids[i] != pid) continue;
+            if (now_sec() - started[i] < 1) {
+                struct { long sec, nsec; } ts = {1, 0};
+                syscall3(SYS_nanosleep, &ts, 0, 0);
+            }
+            pids[i] = start_session(terminals[i], 0);
+            started[i] = now_sec();
+        }
     }
 }

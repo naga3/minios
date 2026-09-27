@@ -166,6 +166,7 @@ def proc_and_sys():
         assert re.search(r"^sysfs /sys sysfs ", out, re.M), out
         out = cmd(vm, "ps")
         assert re.search(r"^ +1  [RS]  init$", out, re.M), out
+        assert re.search(r"^ +\d+  [RS]  sh$", out, re.M), out  # 端末ごとのシェル
         assert re.search(r"^ +2  S  kthreadd$", out, re.M), out
         out = cmd(vm, "dmesg")
         assert "Linux version 7.2.8" in out, out[:200]
@@ -307,7 +308,7 @@ def external_programs():
     vm = booted()
     try:
         out = cmd(vm, "hello a b")
-        assert re.fullmatch(r"hello from pid \d+ \(parent 1\) a b env=3", out), out
+        assert re.fullmatch(r"hello from pid \d+ \(parent \d+\) a b env=3", out), out
         assert cmd(vm, "/bin/hello") .startswith("hello from pid ")
         assert cmd(vm, "false") == "[exit 1]"
         assert cmd(vm, "nosuch") == "nosuch: command not found"
@@ -346,6 +347,28 @@ def install_program_on_disk():
             vm.kill()
     finally:
         os.unlink(disk)
+
+
+@test
+def init_supervises_shells():
+    """init（PID 1）は端末ごとにシェルを起動し、終わったら起動し直す。孤児も回収する"""
+    vm = VM()
+    try:
+        vm.expect(r"\[ OK \] Shell on ttyS0")
+        vm.expect(PROMPT)
+        sh1 = re.search(r"^ +(\d+)  [RS]  sh$", cmd(vm, "ps"), re.M).group(1)
+        vm.send("exit\n")
+        vm.expect(PROMPT)  # init が新しいシェルを起動する
+        sh2 = re.search(r"^ +(\d+)  [RS]  sh$", cmd(vm, "ps"), re.M).group(1)
+        assert sh1 != sh2, (sh1, sh2)
+        vm.send("\x04")    # Ctrl+D でも終わって起動し直す
+        vm.expect(PROMPT)
+        child = re.fullmatch(r"left child (\d+)", cmd(vm, "orphan")).group(1)
+        time.sleep(1)       # 孤児が終わるのを待つ
+        out = cmd(vm, "ps")
+        assert not re.search(rf"^ +{child} ", out, re.M), out  # 回収されてゾンビ（Z）が残っていない
+    finally:
+        vm.kill()
 
 
 @test

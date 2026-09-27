@@ -96,6 +96,8 @@ struct termios {
 
 #define SIG_DFL 0
 #define SIG_IGN 1
+#define SIGINT  2
+#define SIGQUIT 3
 #define SIGTTOU 22
 
 struct kernel_sigaction {
