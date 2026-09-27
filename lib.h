@@ -287,10 +287,13 @@ struct statfs {
 
 #define REBOOT_MAGIC1 0xfee1dead
 #define REBOOT_MAGIC2 672274793
-#define REBOOT_CMD_RESTART 0x01234567
+#define REBOOT_CMD_RESTART  0x01234567
+#define REBOOT_CMD_POWER_OFF 0x4321fedc
 
-// ACPI が無いので電源断はできない。再起動し、QEMU の -no-reboot で終了させる
-static void __attribute__((noreturn)) restart(void) {
-    syscall6(SYS_reboot, REBOOT_MAGIC1, REBOOT_MAGIC2, REBOOT_CMD_RESTART, 0, 0, 0);
+// ACPI があれば電源を切る。無ければ（テスト用の最小カーネル）電源断ができないので再起動し、QEMU の -no-reboot で終了させる
+static void __attribute__((noreturn)) power_off(void) {
+    struct stat st;
+    int acpi = syscall3(SYS_stat, "/sys/firmware/acpi", &st, 0) >= 0;
+    syscall6(SYS_reboot, REBOOT_MAGIC1, REBOOT_MAGIC2, acpi ? REBOOT_CMD_POWER_OFF : REBOOT_CMD_RESTART, 0, 0, 0);
     for (;;) {}
 }

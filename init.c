@@ -471,7 +471,7 @@ static void cmd_shutdown(char *args) {
     (void)args;
     unmount_all();
     print("Bye.\n");
-    restart();
+    power_off();
 }
 
 static const struct {

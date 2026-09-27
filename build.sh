@@ -3,23 +3,19 @@
 set -e
 cd "$(dirname "$0")"
 KSRC=linux-7.2.8
+KOUT=$PWD/build/kernel   # ソースツリーを汚さないよう、カーネルのビルド結果は build/kernel に置く
 mkdir -p build
 
 # カーネル: tinyconfig + kernel.fragment（"!NAME" は無効化）。設定が変わったときだけビルドし直す
 sed 's/#.*//' kernel.fragment | awk 'NF { if ($1 ~ /^!/) printf "-d %s ", substr($1, 2); else printf "-e %s ", $1 } END {print ""}' > build/fragment.args
 if ! cmp -s build/fragment.args build/fragment.args.built || [ ! -f build/bzImage ]; then
-    make -C $KSRC -s tinyconfig
-    $KSRC/scripts/config --file $KSRC/.config $(cat build/fragment.args)
-    make -C $KSRC -s olddefconfig
-    for opt in $(sed 's/#.*//' kernel.fragment); do
-        case $opt in
-        !*) ! grep -q "^CONFIG_${opt#!}=y" $KSRC/.config || { echo "kernel option not disabled: ${opt#!}" >&2; exit 1; } ;;
-        *)  grep -q "^CONFIG_$opt=y" $KSRC/.config || { echo "kernel option not enabled: $opt" >&2; exit 1; } ;;
-        esac
-    done
-    make -C $KSRC -s -j"$(nproc)" bzImage
-    cp $KSRC/arch/x86/boot/bzImage build/bzImage
-    cp $KSRC/.config build/kernel.config
+    make -C $KSRC O=$KOUT -s tinyconfig
+    $KSRC/scripts/config --file $KOUT/.config $(cat build/fragment.args)
+    make -C $KSRC O=$KOUT -s olddefconfig
+    ./check-config.sh kernel.fragment $KOUT/.config
+    make -C $KSRC O=$KOUT -s -j"$(nproc)" bzImage
+    cp $KOUT/arch/x86/boot/bzImage build/bzImage
+    cp $KOUT/.config build/kernel.config
     cp build/fragment.args build/fragment.args.built
 fi
 
@@ -48,7 +44,8 @@ done
 cp /etc/ssl/certs/ca-certificates.crt build/ca-certificates.crt
 
 # initramfs
-$KSRC/usr/gen_init_cpio initramfs.list > build/initramfs.cpio
+make -C $KSRC O=$KOUT -s usr/gen_init_cpio
+$KOUT/usr/gen_init_cpio initramfs.list > build/initramfs.cpio
 
 # 永続ディスク（初回だけ作る。中身を消したいときは disk.img を消す）
 if [ ! -f disk.img ]; then

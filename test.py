@@ -20,17 +20,29 @@ class Timeout(Exception):
 
 
 class VM:
-    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, extra=()):
+    def __init__(self, append="console=ttyS0 loglevel=0", disk=None, net=False, efi=False, extra=()):
         if disk:
             extra = ("-drive", f"file={disk},format=raw,if=virtio", *extra)
         extra = ("-nic", "user,model=virtio-net-pci" if net else "none", *extra)
+        if efi:
+            # 実機と同じ経路: UEFI ファームウェア → FAT ディスク上の BOOTX64.EFI。
+            # -no-reboot を付けない。ACPI の電源断が効かなければ再起動を繰り返して終わらないので、それで確かめられる
+            # IDE ディスクは読み取り専用にできないので、ESP は一時ディレクトリにコピーして書き込み可能で渡す
+            import shutil, tempfile
+            self.tmp = tempfile.TemporaryDirectory()
+            esp = os.path.join(self.tmp.name, "esp")
+            shutil.copytree(f"{ROOT}/build/efi", esp)
+            vars_fd = os.path.join(self.tmp.name, "vars.fd")
+            shutil.copy("/usr/share/OVMF/OVMF_VARS_4M.fd", vars_fd)
+            boot = ("-m", "256M",
+                    "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
+                    "-drive", f"if=pflash,format=raw,file={vars_fd}",
+                    "-drive", f"file=fat:rw:{esp},format=raw")
+        else:
+            boot = ("-m", "64M", "-kernel", f"{ROOT}/build/bzImage", "-initrd", f"{ROOT}/build/initramfs.cpio",
+                    "-append", append, "-no-reboot")
         self.p = subprocess.Popen(
-            ["qemu-system-x86_64", "-m", "64M",
-             "-kernel", f"{ROOT}/build/bzImage",
-             "-initrd", f"{ROOT}/build/initramfs.cpio",
-             "-append", append,
-             "-display", "none", "-serial", "stdio", "-monitor", "none", "-no-reboot",
-             *extra],
+            ["qemu-system-x86_64", *boot, "-display", "none", "-serial", "stdio", "-monitor", "none", *extra],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         self.buf = b""   # まだ expect で消費していない出力
         self.log = b""   # 全出力
@@ -452,6 +464,38 @@ def install_program_over_network():
         vm = booted(disk)  # ネットワーク無しで再起動しても残っている
         try:
             assert cmd(vm, "hi again").endswith(" again env=3")
+        finally:
+            vm.kill()
+    finally:
+        os.unlink(disk)
+
+
+@test
+def efi_boot():
+    """UEFI 版（build-efi.sh）を OVMF から起動し、ACPI で電源が切れる。イメージが古ければ飛ばす"""
+    image = f"{ROOT}/build/efi/EFI/BOOT/BOOTX64.EFI"
+    if not os.path.exists(image) or os.path.getmtime(image) < os.path.getmtime(f"{ROOT}/build/initramfs.cpio"):
+        print("  (skipped: run ./build-efi.sh first)")
+        return
+    disk = new_disk()
+    try:
+        vm = VM(efi=True, disk=disk, net=True)
+        try:
+            vm.expect(r"minios", timeout=120)
+            vm.expect(r"\[ OK \] Mounted /data \(/dev/vda\)")
+            vm.expect(r"\[ OK \] Network eth0")
+            vm.expect(PROMPT)
+            assert cmd(vm, "ls /sys/firmware") == "d        0  efi/\nd        0  acpi/"
+            assert cmd(vm, "ping 10.0.2.2 1", timeout=10).endswith("1 received")
+            assert cmd(vm, "echo from efi > /data/f") == ""
+            vm.send("shutdown\n")
+            vm.expect(r"Bye\.")
+            assert vm.wait_exit(30) == 0
+        finally:
+            vm.kill()
+        vm = booted(disk)  # UEFI 版で書いたディスクを、テスト用の版で読む
+        try:
+            assert cmd(vm, "cat /data/f") == "from efi"
         finally:
             vm.kill()
     finally:

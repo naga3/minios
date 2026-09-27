@@ -1,0 +1,5 @@
+# UEFI で実機起動する版（build-efi.sh）で kernel.fragment に足すもの
+ACPI                  # EFI の前提。電源断（poweroff）もできるようになる
+EFI                   # UEFI のランタイムサービス
+EFI_STUB              # bzImage を UEFI から直接起動できる実行ファイル（PE）にする。ブートローダ不要
+CMDLINE_BOOL          # 起動オプションをカーネルに埋め込む（UEFI から直接起動すると誰も渡してくれない）
