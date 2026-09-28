@@ -6,7 +6,7 @@
 #                               8 暗い灰色、9 明るい青、a 明るい緑、b 明るい水色、c 明るい赤、d 明るい紫、e 黄、f 白）
 #   そのほかの文字は extra_colors の表の色（256 色のパレットの番号）
 #
-# 関数の約束: x は rdi、y は rsi（どちらも負でもよい）、絵は rdx、r8b のビット 0 が 1 なら左右反転。使ったレジスタは戻す（rax を除く）
+# 関数の約束: x は rdi、y は rsi（どちらも負でもよい）、絵は rdx、rcx が 1 なら左右反転（C の呼び方と同じ並び）。使ったレジスタは戻す（rax を除く）
     .code64
     .set W, 320
     .set H, 200
@@ -51,9 +51,11 @@ sprite_init:
 draw_sprite:
     push %rbx
     push %rcx
+    push %r8
     push %r9
     push %r10
     push %r11
+    mov %ecx, %r8d                      # r8 = 反転するか（rcx は x に使う）
     xor %r10d, %r10d                    # r10 = 絵の行
 1:  lea (%rsi,%r10), %r11               # r11 = 画面の y
     cmp $H, %r11
@@ -86,6 +88,7 @@ draw_sprite:
     pop %r11
     pop %r10
     pop %r9
+    pop %r8
     pop %rcx
     pop %rbx
     ret
