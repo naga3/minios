@@ -12,19 +12,20 @@ enum { SKY = RGB6(2, 4, 5), NIGHT = RGB6(0, 0, 1) };
 
 #define PIC(name) extern const char name[]
 PIC(pic_robot_stand); PIC(pic_robot_walk); PIC(pic_robot_jump); PIC(pic_robot_dead);
-PIC(pic_robot_btop); PIC(pic_robot_bstand); PIC(pic_robot_bwalk1); PIC(pic_robot_bwalk2); PIC(pic_robot_bjump);
+PIC(pic_robot_btop); PIC(pic_robot_bstand); PIC(pic_robot_bwalk1); PIC(pic_robot_bjump);
+PIC(pic_robot_blink); PIC(pic_robot_bblink);
 PIC(pic_grass); PIC(pic_dirt); PIC(pic_brick); PIC(pic_question); PIC(pic_used); PIC(pic_hard); PIC(pic_stone);
 PIC(pic_pipe_tl); PIC(pic_pipe_tr); PIC(pic_pipe_l); PIC(pic_pipe_r); PIC(pic_tree_l); PIC(pic_tree_m); PIC(pic_trunk);
 PIC(pic_bridge); PIC(pic_axe); PIC(pic_lava_top); PIC(pic_lava); PIC(pic_cannon_top); PIC(pic_cannon_base);
 PIC(pic_coin1); PIC(pic_coin2); PIC(pic_coin3); PIC(pic_cloud); PIC(pic_bush); PIC(pic_hill_top); PIC(pic_hill_l);
 PIC(pic_hill_m); PIC(pic_pole); PIC(pic_pole_top); PIC(pic_crenel); PIC(pic_door_top); PIC(pic_black);
-PIC(pic_boss32);
+PIC(pic_boss32); PIC(pic_boss32_open);
 #undef PIC
 
 const char *pic_robot[4][10];
 const char *pic_coin_frames[4];
-char pic_boss[4][257];
-char pic_shot[257], pic_oneup[257], pic_wrench_v[257];
+char pic_boss[2][4][257];
+char pic_shot[257], pic_oneup[257], pic_wrench_v[257], pic_star2[257];
 static char robot_buf[4][10][257];
 static char pic_q2[257], pic_q3[257];                       // ? の箱が光る
 static char pic_stone_under[257], pic_brick_under[257], pic_hard_under[257];
@@ -45,22 +46,25 @@ static void recolor(char *dst, const char *src, const char *from, const char *to
 
 static void init_pics(void) {
     const char *robot[10] = { pic_robot_stand, pic_robot_walk, pic_robot_jump, pic_robot_dead, pic_robot_btop,
-                              pic_robot_bstand, pic_robot_bwalk1, pic_robot_bwalk2, pic_robot_bjump, pic_robot_stand };
-    static const char *body[4] = { "19", "4c", "6e", "2a" };   // ふつう（青）、ブラスター（赤）、スター（黄・緑）
+                              pic_robot_bstand, pic_robot_bwalk1, pic_robot_bjump, pic_robot_blink, pic_robot_bblink };
+    static const char *body[4] = { "lmu", "pcq", "ye6", "tai" };   // 体の青を: ふつう、ブラスター（赤）、スター（黄・緑）
     for (int s = 0; s < 4; s++)
         for (int k = 0; k < 10; k++) {
-            recolor(robot_buf[s][k], robot[k], "19", body[s]);
+            recolor(robot_buf[s][k], robot[k], "lmu", body[s]);
             pic_robot[s][k] = robot_buf[s][k];
         }
     pic_coin_frames[0] = pic_coin1;
     pic_coin_frames[1] = pic_coin2;
     pic_coin_frames[2] = pic_coin3;
     pic_coin_frames[3] = pic_coin2;
-    for (int p = 0; p < 4; p++)                             // 32 × 32 のボスを 4 つに分ける
-        for (int r = 0; r < 16; r++)
-            for (int c = 0; c < 16; c++) pic_boss[p][r * 16 + c] = pic_boss32[(r + (p >> 1) * 16) * 32 + c + (p & 1) * 16];
+    for (int m = 0; m < 2; m++)                             // 32 × 32 のボスを 4 つに分ける
+        for (int p = 0; p < 4; p++)
+            for (int r = 0; r < 16; r++)
+                for (int c = 0; c < 16; c++)
+                    pic_boss[m][p][r * 16 + c] = (m ? pic_boss32_open : pic_boss32)[(r + (p >> 1) * 16) * 32 + c + (p & 1) * 16];
     recolor(pic_shot, pic_fireball, "ce", "9b");            // ロボットの弾は青
-    recolor(pic_oneup, pic_battery, "a", "d");              // 1UP は紫の電池
+    recolor(pic_oneup, pic_battery, "tiv", "pdj");          // 1UP はピンクの電池
+    recolor(pic_star2, pic_star, "ye", "fy");               // スターが瞬く
     for (int r = 0; r < 16; r++)                            // 縦のレンチ（縦横を入れ替える）
         for (int c = 0; c < 16; c++) pic_wrench_v[r * 16 + c] = pic_wrench[c * 16 + r];
     recolor(pic_q2, pic_question, "o", "e");

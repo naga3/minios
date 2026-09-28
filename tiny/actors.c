@@ -904,23 +904,23 @@ void interact(void) {
 
 // 敵の絵は左向き。右へ動いているときは反転する
 static const char *thing_pic(Thing *t, int *flip) {
-    int right = t->dir > 0;
+    int right = t->dir > 0, step = (t->anim >> 3) & 1;
     *flip = 0;
     switch (t->type) {
-    case T_WALKER: *flip = (t->anim >> 3) & 1; return t->state ? pic_walker_flat : pic_walker;
-    case T_BEETLE: *flip = right; return (t->anim >> 3) & 1 ? pic_beetle2 : pic_beetle1;
+    case T_WALKER: *flip = right; return t->state ? pic_walker_flat : step ? pic_walker2 : pic_walker;
+    case T_BEETLE: *flip = right; return (t->anim >> 4) & 1 ? pic_beetle2 : pic_beetle1;
     case T_SHELL: return pic_shell;
     case T_FLYER: *flip = right; return pic_beetle1;
     case T_PLANT: return (t->anim >> 4) & 1 ? pic_plant_open : pic_plant_closed;
-    case T_SPIKY: *flip = right; return (t->anim >> 3) & 1 ? pic_spiky2 : pic_spiky1;
+    case T_SPIKY: *flip = right; return step ? pic_spiky2 : pic_spiky1;
     case T_BULLET: *flip = right; return pic_bullet;
-    case T_THROWER: *flip = right; return pic_thrower;
+    case T_THROWER: *flip = right; return t->c < 16 ? pic_thrower2 : pic_thrower;   // 投げる前に振りかぶる
     case T_WRENCH: *flip = (t->anim >> 3) & 1 ? 3 : 0; return (t->anim >> 2) & 1 ? pic_wrench : pic_wrench_v;
-    case T_BUBBLE: *flip = t->b.vy > 0 ? 2 : 0; return pic_bubble;
+    case T_BUBBLE: *flip = (t->b.vy > 0 ? 2 : 0) | ((t->anim >> 2) & 1); return pic_bubble;
     case T_BOSSFIRE: *flip = right | ((t->anim >> 2) & 1 ? 2 : 0); return pic_bossfire;
     case T_BATTERY: return pic_battery;
     case T_BLASTER: return pic_blaster;
-    case T_STAR: *flip = (t->anim >> 2) & 1; return pic_star;
+    case T_STAR: return (t->anim >> 2) & 1 ? pic_star2 : pic_star;
     case T_ONEUP: return pic_oneup;
     case T_COINPOP: return pic_coin_frames[(t->anim >> 1) & 3];
     case T_SHOT: *flip = (t->anim >> 2) & 3; return pic_shot;
@@ -947,7 +947,7 @@ void draw_things(int behind) {
         }
         case T_FLYER:
             draw_sprite(x, y, pic_beetle1, t->dir > 0);
-            draw_sprite(x, y - 6, (t->anim >> 3) & 1 ? pic_wing2 : pic_wing1, t->dir > 0);
+            draw_sprite(x, y - 3, (t->anim >> 2) & 1 ? pic_wing2 : pic_wing1, t->dir > 0);
             break;
         case T_FIREBAR:
             for (int k = 0; k < t->c; k++) {
@@ -960,11 +960,12 @@ void draw_things(int behind) {
             if (t->c & 2) break;                    // 撃たれて点滅
             int f = t->dir > 0, v = t->hp <= 0 ? 2 : 0;
             int top = v ? TILE : 0, bot = v ? 0 : TILE;
+            char (*b)[257] = pic_boss[t->state < 20 || v];   // 火を吐いた直後と、倒れたときは口を開ける
             y += (t->anim >> 4) & 1;                // 歩くと少し上下する
-            draw_sprite(x + (f ? TILE : 0), y + top, pic_boss[0], f | v);
-            draw_sprite(x + (f ? 0 : TILE), y + top, pic_boss[1], f | v);
-            draw_sprite(x + (f ? TILE : 0), y + bot, pic_boss[2], f | v);
-            draw_sprite(x + (f ? 0 : TILE), y + bot, pic_boss[3], f | v);
+            draw_sprite(x + (f ? TILE : 0), y + top, b[0], f | v);
+            draw_sprite(x + (f ? 0 : TILE), y + top, b[1], f | v);
+            draw_sprite(x + (f ? TILE : 0), y + bot, b[2], f | v);
+            draw_sprite(x + (f ? 0 : TILE), y + bot, b[3], f | v);
             break;
         }
         case T_LIFT: case T_LIFT_V:
@@ -979,6 +980,7 @@ void draw_things(int behind) {
     }
 }
 
+// ロボット: 立っているとときどき瞬きする。歩くと 2 枚を交互に、足をそろえた絵のときは 1 点浮く（弾む）
 void draw_player(void) {
     if (pl.hidden || (pl.hurt && (G.frame & 2))) return;
     int set = pl.star ? 2 + ((G.frame >> 2) & 1) : pl.power == 2 ? 1 : 0;
@@ -989,13 +991,15 @@ void draw_player(void) {
         draw_sprite(x, foot - TILE, pic_robot[0][R_DEAD], 0);
         return;
     }
-    int moving = pl.b.vx != 0, step = (pl.anim >> 7) & 1;
+    int moving = pl.b.vx != 0, step = (pl.anim >> 7) & 1, blink = G.frame % 170 < 7;
+    int bob = pl.on_ground && moving && !step ? -1 : 0;
+    const char **pic = pic_robot[set];
     if (!big) {
-        int k = !pl.on_ground ? R_JUMP : moving ? (step ? R_WALK : R_WALK2) : R_STAND;
-        draw_sprite(x, foot - TILE, pic_robot[set][k], pl.facing);
+        int k = !pl.on_ground ? R_JUMP : moving && step ? R_WALK : blink ? R_BLINK : R_STAND;
+        draw_sprite(x, foot - TILE + bob, pic[k], pl.facing);
     } else {
-        int k = !pl.on_ground ? R_BJUMP : moving ? (step ? R_BWALK1 : R_BWALK2) : R_BSTAND;
-        draw_sprite(x, foot - 2 * TILE, pic_robot[set][R_BTOP], pl.facing);
-        draw_sprite(x, foot - TILE, pic_robot[set][k], pl.facing);
+        int k = !pl.on_ground ? R_BJUMP : moving && step ? R_BWALK : R_BSTAND;
+        draw_sprite(x, foot - 2 * TILE + bob, pic[blink ? R_BBLINK : R_BTOP], pl.facing);
+        draw_sprite(x, foot - TILE + bob, pic[k], pl.facing);
     }
 }

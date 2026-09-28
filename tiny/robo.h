@@ -76,16 +76,16 @@ Thing *new_thing(int type, int x, int y);
 
 // robo.c が用意する絵
 extern const char *pic_robot[4][10];    // [色の組][絵]（0 ふつう、1 ブラスター、2・3 スター）
-enum { R_STAND, R_WALK, R_JUMP, R_DEAD, R_BTOP, R_BSTAND, R_BWALK1, R_BWALK2, R_BJUMP, R_WALK2 };
+enum { R_STAND, R_WALK, R_JUMP, R_DEAD, R_BTOP, R_BSTAND, R_BWALK, R_BJUMP, R_BLINK, R_BBLINK };
 extern const char *pic_coin_frames[4];
-extern char pic_boss[4][257];
-extern char pic_shot[257], pic_oneup[257], pic_wrench_v[257];
+extern char pic_boss[2][4][257];        // [口を閉じた・開けた][4 分の 1]
+extern char pic_shot[257], pic_oneup[257], pic_wrench_v[257], pic_star2[257];
 
 // pics.c
 #define PIC(name) extern const char name[]
-PIC(pic_walker); PIC(pic_walker_flat); PIC(pic_beetle1); PIC(pic_beetle2); PIC(pic_shell);
+PIC(pic_walker); PIC(pic_walker2); PIC(pic_walker_flat); PIC(pic_beetle1); PIC(pic_beetle2); PIC(pic_shell);
 PIC(pic_wing1); PIC(pic_wing2); PIC(pic_plant_open); PIC(pic_plant_closed); PIC(pic_stem);
-PIC(pic_spiky1); PIC(pic_spiky2); PIC(pic_bullet); PIC(pic_thrower); PIC(pic_wrench);
+PIC(pic_spiky1); PIC(pic_spiky2); PIC(pic_bullet); PIC(pic_thrower); PIC(pic_thrower2); PIC(pic_wrench);
 PIC(pic_fireball); PIC(pic_bubble); PIC(pic_bossfire); PIC(pic_lift);
 PIC(pic_battery); PIC(pic_blaster); PIC(pic_star); PIC(pic_debris); PIC(pic_flag);
 #undef PIC
