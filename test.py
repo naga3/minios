@@ -1066,7 +1066,7 @@ def scratch_runs_linux_binary():
     vm = ScratchVM(append="run=/bin/hello a b c")
     try:
         vm.expect(r"exec /bin/hello")
-        vm.expect(r"hello from pid 1 \(parent 0\) a b c env=3")   # argv・envp・getpid・getppid・write
+        vm.expect(r"hello from pid 1 \(parent 0\) a b c env=2")   # argv・envp（HOME と TERM）・getpid・getppid・write
         vm.expect(r"\[init exited with 0\]")
         assert vm.wait_exit() == 1
     finally:
@@ -1098,8 +1098,28 @@ def scratch_processes_match_linux():
         scratch = out[out.index("forktest: pid"):].replace("\r\n", "\n")
     finally:
         vm.kill()
-    pids = lambda s: re.sub(r"pid \d+|parent \d+", "pid N", s)
+    # PID の番号と、環境変数の数（Linux 版はシェルが PATH を足して渡す）は比べない
+    pids = lambda s: re.sub(r"env=\d+", "env=N", re.sub(r"pid \d+|parent \d+", "pid N", s))
     assert pids(linux) == pids(scratch), (linux, scratch)
+
+
+@test
+def scratch_files_match_linux():
+    """メモリ上のファイルシステムとファイル記述子: fstest の出力が Linux と一字一句同じになる"""
+    subprocess.run([f"{ROOT}/kernel/build.sh"], check=True, capture_output=True)
+    vm = booted()
+    try:
+        linux = cmd(vm, "fstest")
+    finally:
+        vm.kill()
+    vm = ScratchVM(append="run=/bin/fstest")
+    try:
+        out = vm.expect(r"fstest: done")
+        scratch = out[out.index("mkdir /t:"):].replace("\r\n", "\n")
+        vm.expect(r"\[init exited with 0\]")
+    finally:
+        vm.kill()
+    assert linux == scratch, (linux, scratch)
 
 
 def main():

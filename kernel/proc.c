@@ -6,7 +6,6 @@ extern void swtch(u64 *old_rsp, u64 new_rsp);
 extern void proc_trampoline(void);
 extern u64 kernel_rsp;
 
-#define NPROC 64
 #define KSTACK_PAGES 4
 #define USER_STACK_TOP 0x40000000UL  // 1GB の手前から下へ
 #define USER_STACK_PAGES 16
@@ -77,6 +76,16 @@ void wakeup(void *chan) {
 
 // ---- プロセスの用意 ----
 
+// ps に出す名前: パスの最後の部分（15 文字まで）
+void set_name(struct proc *p, const char *path) {
+    const char *b = path;
+    for (const char *q = path; *q; q++)
+        if (*q == '/') b = q + 1;
+    int i = 0;
+    for (; i < 15 && b[i]; i++) p->name[i] = b[i];
+    p->name[i] = 0;
+}
+
 static struct proc *proc_alloc(void) {
     for (int i = 0; i < NPROC; i++) {
         struct proc *p = &procs[i];
@@ -90,6 +99,8 @@ static struct proc *proc_alloc(void) {
         p->state = EMBRYO;
         p->wake_tick = 0;
         p->chan = 0;
+        p->sig_pending = p->sig_ignored = 0;
+        for (int k = 0; k < NFD; k++) p->fds[k] = 0;
         return p;
     }
     return 0;
@@ -158,10 +169,12 @@ static void push_u64(u64 *pml4v, u64 *sp, u64 v) { push_bytes(pml4v, sp, &v, 8);
 // argv・envp はカーネルの中の文字列。成功なら 0 で、*pml4_out・*entry・*sp に結果
 static long build_image(const char *path, char **argv, int argc, char **envp, int envc,
                         u64 **pml4_out, u64 *entry, u64 *sp_out) {
-    u64 size;
-    u32 mode;
-    const u8 *data = initrd_find(path, &size, &mode);
-    if (!data) return -2;  // ENOENT
+    long err;
+    struct inode *ip = vfs_lookup_at(cur ? cur->cwd : vfs_root, path, 1, &err);
+    if (!ip) return err;
+    if (ip->type != I_REG || !(ip->mode & 0111)) return -13;  // EACCES（ファイルでない、実行の権限が無い）
+    const u8 *data = ip->data;
+    u64 size = ip->size;
     u64 *pml4v = pml4_new();
     *entry = load_elf(pml4v, data, size);
     if (!*entry) {
@@ -207,9 +220,17 @@ long exec_initial(const char *path, char *const argv[], char *const envp[]) {
     while (envp[envc]) envc++;
     struct proc *p = proc_alloc();
     u64 entry, sp;
+    cur = 0;
     long e = build_image(path, (char **)argv, argc, (char **)envp, envc, &p->pml4, &entry, &sp);
     if (e < 0) return e;
     p->ppid = 0;
+    p->pgid = p->sid = p->pid;
+    p->cwd = vfs_root;
+    // Linux と同じく、最初のプロセスは端末（/dev/console）を標準入力・出力・エラーとして持って始まる
+    struct file *console = file_new(F_TTY);
+    console->flags = 2;  // O_RDWR
+    for (int i = 0; i < 3; i++) p->fds[i] = i ? file_dup(console) : console;
+    set_name(p, path);
     struct regs r = {.rip = entry, .cs = 0x23, .rflags = 0x202, .rsp = sp, .ss = 0x1b};
     proc_prepare(p, &r);
     p->state = RUNNABLE;
@@ -231,6 +252,11 @@ long sys_fork(struct regs *r) {
         return -12;  // ENOMEM
     }
     p->ppid = cur->pid;
+    p->pgid = cur->pgid;
+    p->sid = cur->sid;
+    p->sig_ignored = cur->sig_ignored;
+    for (int i = 0; i < 16; i++) p->name[i] = cur->name[i];
+    files_fork(cur, p);
     struct regs child = *r;
     child.rax = 0;  // 子の fork は 0 を返す
     proc_prepare(p, &child);
@@ -281,6 +307,7 @@ long sys_execve(struct regs *r) {
     if (e < 0) return e;
     u64 *old = cur->pml4;
     cur->pml4 = pml4v;
+    set_name(cur, path);
     __asm__ volatile("mov %0, %%cr3" ::"r"(V2P(pml4v)) : "memory");
     pml4_free(old);
     // 戻り先を新しいプログラムの入り口にし、レジスタを空にする
@@ -295,6 +322,7 @@ void process_exit_status(long status) {
         qemu_exit(0);
     }
     free_user_space(cur->pml4);
+    files_close_all(cur);
     for (int i = 0; i < NPROC; i++)  // 子は init（PID 1）に引き取ってもらう
         if (procs[i].state != UNUSED && procs[i].ppid == cur->pid) {
             procs[i].ppid = 1;
@@ -344,5 +372,21 @@ long sys_nanosleep(u64 ts_va) {
     if (t == 0) return 0;
     cur->wake_tick = ticks + t;
     sleep_on(0);
+    return 0;
+}
+
+long sys_setsid(void) {
+    cur->sid = cur->pgid = cur->pid;
+    cur->ctty = 0;
+    return cur->pid;
+}
+
+long sys_setpgid(long pid, long pgid) {
+    struct proc *p = 0;
+    if (pid == 0) p = cur;
+    for (int i = 0; !p && i < NPROC; i++)
+        if (procs[i].state != UNUSED && procs[i].pid == pid) p = &procs[i];
+    if (!p) return -3;  // ESRCH
+    p->pgid = pgid ? pgid : p->pid;
     return 0;
 }

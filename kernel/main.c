@@ -29,14 +29,20 @@ void kmain(unsigned int magic, unsigned int mbinfo) {
     kprint("memory: "); kprint_u((mb->mem_upper + 1024) / 1024); kprint(" MiB\n");
 
     // 空いている物理メモリ: カーネルと initramfs（Multiboot のモジュール）の後ろから、メモリの終わりまで
+    // ファイルシステムを作るのにメモリの割り当てを使うので、先に mm_init する
     u64 free_start = (u64)kernel_end;
+    struct multiboot_module *mod = 0;
     if ((mb->flags & 8) && mb->mods_count > 0) {
-        struct multiboot_module *mod = (struct multiboot_module *)(u64)mb->mods_addr;
-        initrd_init(P2V(mod->start), mod->end - mod->start);
+        mod = (struct multiboot_module *)(u64)mb->mods_addr;
         if (mod->end > free_start) free_start = mod->end;
-        kprint("initramfs: "); kprint_u((mod->end - mod->start) / 1024); kprint(" KiB\n");
     }
     mm_init(free_start, (u64)(mb->mem_upper + 1024) * 1024);
+    if (mod) {
+        vfs_init(P2V(mod->start), mod->end - mod->start);
+        kprint("initramfs: "); kprint_u((mod->end - mod->start) / 1024); kprint(" KiB\n");
+    } else {
+        vfs_init(0, 0);
+    }
 
     cpu_init();
     irq_init();
@@ -61,7 +67,9 @@ void kmain(unsigned int magic, unsigned int mbinfo) {
             if (*p) *p++ = 0;
         }
         argv[argc] = 0;
-        static char *envp[] = {"HOME=/", "TERM=linux", "PATH=/bin", 0};
+        static char *envp[] = {"HOME=/", "TERM=linux", 0};  // Linux がカーネルから init に渡すのと同じ
+        extern int serial_to_tty;
+        serial_to_tty = 1;
         kprint("exec "); kprint(argv[0]); kprint("\n");
         long e = exec_initial(argv[0], argv, envp);
         kprint("exec failed: "); kprint_u(-e); kprint("\n");

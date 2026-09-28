@@ -18,10 +18,14 @@ void serial_init(void) {
 static char rx[256];
 static volatile unsigned rx_head, rx_tail;
 
+// 受信した文字は、プロセスが動いていれば端末（tty）へ、まだなら輪（起動直後のキー入力の確認用）へ
+int serial_to_tty;
+
 void serial_irq(void) {
     while (inb(COM1 + 5) & 1) {
         char c = inb(COM1);
-        if (rx_head - rx_tail < sizeof rx) rx[rx_head++ % sizeof rx] = c;
+        if (serial_to_tty) tty_input(c);
+        else if (rx_head - rx_tail < sizeof rx) rx[rx_head++ % sizeof rx] = c;
     }
 }
 

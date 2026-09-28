@@ -50,3 +50,4 @@ file /usr/include/minios/sha256.h sha256.h 0644 0 0
 file /bin/sandbox build/bin/sandbox 0755 0 0
 file /usr/include/minios/seccomp.h seccomp.h 0644 0 0
 file /bin/forktest build/bin/forktest 0755 0 0
+file /bin/fstest build/bin/fstest 0755 0 0

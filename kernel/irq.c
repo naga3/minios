@@ -56,4 +56,5 @@ void interrupt(struct regs *r) {
         // ユーザーモードで動いていたプロセスを、50ms ごとに横取りして他に回す（カーネルの中では横取りしない）
         if ((r->cs & 3) == 3 && ticks % 5 == 0) schedule();
     }
+    if ((r->cs & 3) == 3) signal_check();  // ユーザーモードに戻る前に、届いたシグナルを処理する
 }
