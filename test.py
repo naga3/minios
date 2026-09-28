@@ -1067,13 +1067,13 @@ def scratch_runs_linux_binary():
     try:
         vm.expect(r"exec /bin/hello")
         vm.expect(r"hello from pid 1 \(parent 0\) a b c env=3")   # argv・envp・getpid・getppid・write
-        vm.expect(r"\[process 1 exited with 0\]")
+        vm.expect(r"\[init exited with 0\]")
         assert vm.wait_exit() == 1
     finally:
         vm.kill()
     vm = ScratchVM(append="run=/bin/false")
     try:
-        vm.expect(r"\[process 1 exited with 1\]")               # exit_group の終了コード
+        vm.expect(r"\[init exited with 1\]")                    # exit_group の終了コード
     finally:
         vm.kill()
     vm = ScratchVM(append="run=/bin/nosuch")
@@ -1081,6 +1081,25 @@ def scratch_runs_linux_binary():
         vm.expect(r"exec failed: 2")                               # ENOENT
     finally:
         vm.kill()
+
+
+@test
+def scratch_processes_match_linux():
+    """fork・execve・wait4・nanosleep・スケジューラ: forktest の出力が Linux と同じになる（PID の番号は除く）"""
+    subprocess.run([f"{ROOT}/kernel/build.sh"], check=True, capture_output=True)
+    vm = booted()
+    try:
+        linux = cmd(vm, "forktest")
+    finally:
+        vm.kill()
+    vm = ScratchVM(append="run=/bin/forktest")
+    try:
+        out = vm.expect(r"forktest: done")
+        scratch = out[out.index("forktest: pid"):].replace("\r\n", "\n")
+    finally:
+        vm.kill()
+    pids = lambda s: re.sub(r"pid \d+|parent \d+", "pid N", s)
+    assert pids(linux) == pids(scratch), (linux, scratch)
 
 
 def main():

@@ -39,6 +39,19 @@ u64 page_alloc(void) {
 
 u64 mm_free_pages(void) { return (free_end - next_free) / PAGE; }
 
+void page_free(u64 pa) {
+    *(u64 *)P2V(pa) = free_list;
+    free_list = pa;
+}
+
+u64 pages_alloc_contig(u64 n) {
+    if (next_free + n * PAGE > free_end) return 0;
+    u64 p = next_free;
+    next_free += n * PAGE;
+    kmemset(P2V(p), 0, n * PAGE);
+    return p;
+}
+
 // プロセスのページテーブル: 高い番地（物理メモリ全体、PML4[256]）はカーネルと共有する。
 // 低い番地は、最初の 2MB（カーネルのコードとデータ）だけをカーネル専用で写し、残りはプロセスが使う
 u64 *pml4_new(void) {
@@ -77,4 +90,73 @@ void *user_ptr(u64 *pml4v, u64 va) {
         t = P2V(e & 0x000ffffffffff000UL);
     }
     return 0;
+}
+
+#define ADDR(e) ((e) & 0x000ffffffffff000UL)
+
+// ユーザーの部分（PML4 の 0〜255）の 4KB のページをたどり、fn(va, pa) を呼ぶ。2MB のページ（カーネルの最初の 2MB）は飛ばす
+static int walk_user(u64 *pml4v, int (*fn)(u64 va, u64 pa, void *ctx), void *ctx) {
+    for (u64 i = 0; i < 256; i++) {
+        if (!(pml4v[i] & PTE_P)) continue;
+        u64 *pdpt = P2V(ADDR(pml4v[i]));
+        for (u64 j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PTE_P)) continue;
+            u64 *pd = P2V(ADDR(pdpt[j]));
+            for (u64 k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_P) || (pd[k] & 0x80)) continue;
+                u64 *pt = P2V(ADDR(pd[k]));
+                for (u64 l = 0; l < 512; l++) {
+                    if (!(pt[l] & PTE_P)) continue;
+                    u64 va = i << 39 | j << 30 | k << 21 | l << 12;
+                    if (fn(va, ADDR(pt[l]), ctx) < 0) return -1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int copy_one(u64 va, u64 pa, void *ctx) {
+    u64 n = page_alloc();
+    if (!n) return -1;
+    kmemcpy(P2V(n), P2V(pa), PAGE);
+    return map_page(ctx, va, n, PTE_W | PTE_U);
+}
+
+int copy_user_space(u64 *from, u64 *to) { return walk_user(from, copy_one, to); }
+
+static int free_one(u64 va, u64 pa, void *ctx) {
+    (void)va, (void)ctx;
+    page_free(pa);
+    return 0;
+}
+
+// ユーザーのページを返し、途中の表も返す（表の一番上と、pml4_new が作った最初の表は残す）
+void free_user_space(u64 *pml4v) {
+    walk_user(pml4v, free_one, 0);
+    for (u64 i = 0; i < 256; i++) {
+        if (!(pml4v[i] & PTE_P)) continue;
+        u64 *pdpt = P2V(ADDR(pml4v[i]));
+        for (u64 j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PTE_P)) continue;
+            u64 *pd = P2V(ADDR(pdpt[j]));
+            for (u64 k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_P) || (pd[k] & 0x80)) continue;
+                page_free(ADDR(pd[k]));
+                pd[k] = 0;
+            }
+        }
+    }
+}
+
+void pml4_free(u64 *pml4v) {
+    free_user_space(pml4v);
+    for (u64 i = 0; i < 256; i++) {
+        if (!(pml4v[i] & PTE_P)) continue;
+        u64 *pdpt = P2V(ADDR(pml4v[i]));
+        for (u64 j = 0; j < 512; j++)
+            if (pdpt[j] & PTE_P) page_free(ADDR(pdpt[j]));
+        page_free(ADDR(pml4v[i]));
+    }
+    page_free(V2P(pml4v));
 }

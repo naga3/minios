@@ -44,9 +44,14 @@ void cpu_set_kernel_stack(u64 top);
 #define PTE_U 0x4UL
 void mm_init(u64 free_start, u64 free_end);
 u64 page_alloc(void);                           // 0 で埋めた 4KB のページ（物理アドレス）。無ければ 0
+void page_free(u64 pa);
+u64 pages_alloc_contig(u64 n);                  // 続いた n ページ（カーネルスタック用。返さない）
 u64 mm_free_pages(void);
 u64 *pml4_new(void);                            // カーネルの部分だけを持つ、新しいプロセスのページテーブル（高い番地で返す）
 int map_page(u64 *pml4, u64 va, u64 pa, u64 flags);
+int copy_user_space(u64 *from, u64 *to);        // ユーザーのページを全部コピーする（fork）
+void free_user_space(u64 *pml4);                // ユーザーのページと途中の表を返す（表の一番上は残す）
+void pml4_free(u64 *pml4);                      // ページテーブルごと全部返す
 void *user_ptr(u64 *pml4, u64 va);              // プロセスの番地 va を、カーネルから触れる番地に（写されていなければ 0）
 void kmemset(void *d, int c, size_t n);
 void kmemcpy(void *d, const void *s, size_t n);
@@ -56,10 +61,28 @@ void initrd_init(const void *data, u64 size);
 const void *initrd_find(const char *path, u64 *size, u32 *mode);
 
 // proc.c: プロセス
-extern u64 *current_pml4;
-extern long current_pid;
+enum { UNUSED, EMBRYO, RUNNABLE, RUNNING, SLEEPING, ZOMBIE };
+struct proc {
+    int state;
+    long pid, ppid;
+    u64 *pml4;         // ページテーブル（高い番地）
+    u64 kstack_top;    // カーネルスタックの一番上
+    u64 ctx_rsp;       // swtch で取っておいたカーネルスタック
+    long exit_status;  // wait4 の形
+    u64 wake_tick;     // nanosleep: この ticks になったら起きる（0 なら無し）
+    void *chan;        // 眠っている理由（wakeup の相手）
+};
+extern struct proc *cur;
 long exec_initial(const char *path, char *const argv[], char *const envp[]);
+void schedule(void);
+void sleep_on(void *chan);
+void wakeup(void *chan);
 void process_exit(long code);
+void process_exit_status(long status);
+long sys_fork(struct regs *r);
+long sys_execve(struct regs *r);
+long sys_wait4(long pid, u64 status_va, long options);
+long sys_nanosleep(u64 ts_va);
 
 // syscall.c
 void syscall_init(void);

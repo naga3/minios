@@ -48,8 +48,12 @@ void interrupt(struct regs *r) {
         qemu_exit(3);
     }
     u64 irq = r->vector - 32;
-    if (irq == 0) ticks++;
-    if (irq == 4) serial_irq();
-    if (irq >= 8) outb(0xA0, 0x20);  // 割り込みの終わりを PIC に知らせる
+    if (irq >= 8) outb(0xA0, 0x20);  // 割り込みの終わりを PIC に知らせる（切り替えの前に）
     outb(0x20, 0x20);
+    if (irq == 4) serial_irq();
+    if (irq == 0) {
+        ticks++;
+        // ユーザーモードで動いていたプロセスを、50ms ごとに横取りして他に回す（カーネルの中では横取りしない）
+        if ((r->cs & 3) == 3 && ticks % 5 == 0) schedule();
+    }
 }

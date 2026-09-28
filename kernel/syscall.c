@@ -23,7 +23,7 @@ void syscall_init(void) {
 static long sys_write(long fd, u64 buf, u64 n) {
     if (fd != 1 && fd != 2) return -9;  // EBADF（今はシリアルだけ）
     for (u64 i = 0; i < n; i++) {
-        char *c = user_ptr(current_pml4, buf + i);
+        char *c = user_ptr(cur->pml4, buf + i);
         if (!c) return -14;             // EFAULT
         if (*c == '\n') serial_putc('\r');
         serial_putc(*c);
@@ -35,10 +35,17 @@ void syscall_dispatch(struct regs *r) {
     long ret = -ENOSYS;
     switch (r->rax) {
     case 1:   ret = sys_write(r->rdi, r->rsi, r->rdx); break;
-    case 39:  ret = current_pid; break;          // getpid
-    case 110: ret = 0; break;                    // getppid（最初のプロセスの親は無い）
-    case 60:                                     // exit
-    case 231:                                    // exit_group
+    case 35:  ret = sys_nanosleep(r->rdi); break;
+    case 39:  ret = cur->pid; break;                           // getpid
+    case 57:  ret = sys_fork(r); break;
+    case 59:                                                  // execve: 成功したら r は新しいプログラムの状態
+        ret = sys_execve(r);
+        if (ret == 0) return;
+        break;
+    case 61:  ret = sys_wait4(r->rdi, r->rsi, r->rdx); break;
+    case 110: ret = cur->ppid; break;                         // getppid
+    case 60:                                                  // exit
+    case 231:                                                 // exit_group
         process_exit(r->rdi);
         break;
     default:
