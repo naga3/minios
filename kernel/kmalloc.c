@@ -38,7 +38,8 @@ void kfree(void *p) {
     if (!p) return;
     u64 *h = (u64 *)((u8 *)p - 16);
     if (h[0] >= 100) {
-        for (u64 i = 0; i < h[0] - 100; i++) page_free(V2P(h) + i * PAGE);
+        u64 pages = h[0] - 100;  // 先に読む（1 枚目を返すと、先頭が空きリストの鎖で上書きされる）
+        for (u64 i = 0; i < pages; i++) page_free(V2P(h) + i * PAGE);
         return;
     }
     u64 b = h[0];  // 先に読む（次の行で同じ場所を空きリストの鎖で上書きする）

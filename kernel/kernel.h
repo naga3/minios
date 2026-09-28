@@ -48,6 +48,7 @@ u64 page_alloc(void);                           // 0 で埋めた 4KB のペー�
 void page_free(u64 pa);
 u64 pages_alloc_contig(u64 n);                  // 続いた n ページ（カーネルスタック用。返さない）
 u64 mm_free_pages(void);
+u64 mm_total_pages(void);
 u64 *pml4_new(void);                            // カーネルの部分だけを持つ、新しいプロセスのページテーブル（高い番地で返す）
 int map_page(u64 *pml4, u64 va, u64 pa, u64 flags);
 int copy_user_space(u64 *from, u64 *to);        // ユーザーのページを全部コピーする（fork）
@@ -154,6 +155,7 @@ struct proc {
     struct inode *cwd;
     u64 sig_pending, sig_ignored;
     char name[16];     // ps に出す名前（prctl の PR_SET_NAME か、exec したファイルの名前）
+    u8 fpu[512] __attribute__((aligned(16)));  // SSE・x87 のレジスタ（切り替えのときに fxsave・fxrstor する）
 };
 #define NPROC 64
 extern struct proc procs[NPROC];
@@ -171,6 +173,15 @@ long sys_nanosleep(u64 ts_va);
 long sys_setsid(void);
 void set_name(struct proc *p, const char *path);
 long sys_setpgid(long pid, long pgid);
+
+// sys_misc.c
+void clock_init(void);
+long sys_clock_gettime(long clock, u64 ts);
+long sys_uname(u64 va);
+long sys_sysinfo(u64 va);
+long sys_mount(u64 src, u64 dir, u64 type);
+long sys_reboot(long magic1, long magic2, long cmd);
+long sys_statfs(u64 path, u64 va);
 
 // signal.c
 void signal_send(struct proc *p, int sig);

@@ -11,6 +11,8 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 ## 動かす
 
 ```sh
+./run.sh scratch    # Linux の代わりに自作カーネル（kernel/）で起動する
+MINIOS_KERNEL=scratch ./test.py   # 同じテストを自作カーネルに向けて回す
 ./run.sh            # QEMU で起動（シリアル）。Ctrl+C はゲストに届く。QEMU を強制終了するには Ctrl+A → X
 ./run-efi.sh        # UEFI 版を実機と同じ経路（UEFI → FAT 上の BOOTX64.EFI）で起動
 ./run-efi.sh gui    # 画面のウィンドウも開き、USB キーボードで操作する（WSL なら WSLg）

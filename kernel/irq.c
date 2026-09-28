@@ -33,6 +33,20 @@ void irq_init(void) {
 }
 
 void interrupt(struct regs *r) {
+    // ユーザーのプログラムの例外は、そのプロセスをシグナルで終わらせる（Linux と同じ）。カーネルの例外は止まる
+    if (r->vector < 32 && (r->cs & 3) == 3) {
+        static const int sig[32] = {[0] = 8, [6] = 4, [13] = 11, [14] = 11, [16] = 8, [19] = 8};  // SIGFPE・SIGILL・SIGSEGV
+        kprint("["); kprint(cur->name); kprint(" (pid "); kprint_u(cur->pid); kprint("): ");
+        kprint(exception_names[r->vector] ? exception_names[r->vector] : "exception");
+        kprint(" at "); kprint_hex(r->rip);
+        if (r->vector == 14) {
+            u64 cr2;
+            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+            kprint(", address "); kprint_hex(cr2);
+        }
+        kprint("]\n");
+        process_exit_status(sig[r->vector] ? sig[r->vector] : 11);
+    }
     if (r->vector < 32) {
         kprint("\n*** exception: ");
         kprint(exception_names[r->vector] ? exception_names[r->vector] : "?");

@@ -79,6 +79,15 @@ void syscall_dispatch(struct regs *r) {
     case 112: ret = sys_setsid(); break;
     case 157: ret = sys_prctl(a, b); break;
     case 217: ret = sys_getdents64(a, b, c); break;
+    case 41:  ret = -97; break;                          // socket: EAFNOSUPPORT（ネットワークはまだ無い）
+    case 63:  ret = sys_uname(a); break;
+    case 99:  ret = sys_sysinfo(a); break;
+    case 137: ret = sys_statfs(a, b); break;
+    case 162: ret = 0; break;                            // sync（メモリの中だけなので、することが無い）
+    case 165: ret = sys_mount(a, b, c); break;
+    case 166: ret = 0; break;                            // umount2
+    case 169: ret = sys_reboot(a, b, c); break;
+    case 228: ret = sys_clock_gettime(a, b); break;
     default:
         kprint("[syscall "); kprint_u(r->rax); kprint(" not implemented]\n");
     }

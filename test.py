@@ -15,6 +15,7 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # KVM が使えれば使う（ローカル LLM を動かすには必須）。使えなければソフトウェアエミュレーション
 ACCEL = ("-accel", "kvm", "-cpu", "host") if os.access("/dev/kvm", os.R_OK | os.W_OK) else ("-accel", "tcg")
+SCRATCH = os.environ.get("MINIOS_KERNEL") == "scratch"
 ANSI = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -59,6 +60,10 @@ class VM:
                     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
                     "-drive", f"if=pflash,format=raw,file={vars_fd}",
                     *esp_drive)
+        elif SCRATCH:
+            # MINIOS_KERNEL=scratch: Linux の代わりに自作カーネル（kernel/）で同じテストを回す。起動オプションは使わない（/init を起動する）
+            boot = ("-m", "256M", "-kernel", f"{ROOT}/build/scratch/kernel.elf", "-initrd", f"{ROOT}/build/initramfs.cpio",
+                    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-no-reboot")
         else:
             boot = ("-m", "64M", "-kernel", f"{ROOT}/build/bzImage", "-initrd", f"{ROOT}/build/initramfs.cpio",
                     "-append", append, "-no-reboot")
@@ -134,7 +139,11 @@ class VM:
                 self._read(0.1)
             except EOFError:
                 break
-        return self.p.wait(max(0.1, deadline - time.monotonic()))
+        code = self.p.wait(max(0.1, deadline - time.monotonic()))
+        # 自作カーネルは QEMU のデバッグ用の終了装置で終わる（0 を書くと終了コード 1）。Linux の電源断（0）に揃える
+        if SCRATCH and not isinstance(self, ScratchVM) and code == 1:
+            return 0
+        return code
 
     def kill(self):
         if self.p.poll() is None:
@@ -179,7 +188,7 @@ PROMPT = r"minios# \Z"
 def booted(disk=None, net=False, models=False):
     """起動してプロンプトが出た VM を返す"""
     vm = VM(disk=disk, net=net, models=models)
-    vm.expect(r"kernel: Linux \S+ x86_64")
+    vm.expect(r"kernel: \S+ \S+ x86_64")  # Linux でも自作カーネル（minios 0.1-scratch）でも
     vm.expect(PROMPT)
     return vm
 
@@ -1033,7 +1042,7 @@ def scratch_boot():
     """自作カーネルが 64 ビットで起動し、割り込み（タイマー、シリアルの受信）と例外を扱える"""
     out = subprocess.run([f"{ROOT}/kernel/build.sh"], capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
-    vm = ScratchVM()
+    vm = ScratchVM(append="test=keys")
     try:
         vm.expect(r"minios scratch kernel")
         vm.expect(r"memory: 255 MiB")

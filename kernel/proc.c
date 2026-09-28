@@ -28,12 +28,14 @@ static void irq_restore(u64 f) { __asm__ volatile("push %0; popfq" ::"r"(f) : "m
 
 static void switch_to(struct proc *next) {
     struct proc *old = cur;
+    __asm__ volatile("fxsave %0" : "=m"(old->fpu));  // ユーザーの SSE のレジスタを取っておく
     cur = next;
     next->state = RUNNING;
     kernel_rsp = next->kstack_top;
     cpu_set_kernel_stack(next->kstack_top);
     __asm__ volatile("mov %0, %%cr3" ::"r"(V2P(next->pml4)) : "memory");
     swtch(&old->ctx_rsp, next->ctx_rsp);
+    __asm__ volatile("fxrstor %0" ::"m"(cur->fpu));  // 戻ってきたプロセスの SSE のレジスタを戻す
 }
 
 // 次に動くプロセスを選んで切り替える。今のプロセスが動けるなら、他が無ければそのまま戻る
@@ -76,6 +78,25 @@ void wakeup(void *chan) {
 
 // ---- プロセスの用意 ----
 
+// SSE・x87 のレジスタの初期状態（fninit した状態を 1 回だけ取っておいて写す）
+static void fpu_init_state(struct proc *p) {
+    static u8 initial[512] __attribute__((aligned(16)));
+    static int have;
+    if (!have) {
+        u64 f = irq_save();
+        u8 save[512] __attribute__((aligned(16)));
+        __asm__ volatile("fxsave %0" : "=m"(save));
+        __asm__ volatile("fninit");
+        u32 mxcsr = 0x1f80;  // 既定: すべての例外を隠し、最近接に丸める
+        __asm__ volatile("ldmxcsr %0" ::"m"(mxcsr));
+        __asm__ volatile("fxsave %0" : "=m"(initial));
+        __asm__ volatile("fxrstor %0" ::"m"(save));
+        irq_restore(f);
+        have = 1;
+    }
+    kmemcpy(p->fpu, initial, sizeof initial);
+}
+
 // ps に出す名前: パスの最後の部分（15 文字まで）
 void set_name(struct proc *p, const char *path) {
     const char *b = path;
@@ -101,6 +122,7 @@ static struct proc *proc_alloc(void) {
         p->chan = 0;
         p->sig_pending = p->sig_ignored = 0;
         for (int k = 0; k < NFD; k++) p->fds[k] = 0;
+        fpu_init_state(p);
         return p;
     }
     return 0;
@@ -257,6 +279,7 @@ long sys_fork(struct regs *r) {
     p->sig_ignored = cur->sig_ignored;
     for (int i = 0; i < 16; i++) p->name[i] = cur->name[i];
     files_fork(cur, p);
+    __asm__ volatile("fxsave %0" : "=m"(p->fpu));  // 子は親の今の SSE のレジスタから始まる
     struct regs child = *r;
     child.rax = 0;  // 子の fork は 0 を返す
     proc_prepare(p, &child);
@@ -310,8 +333,10 @@ long sys_execve(struct regs *r) {
     set_name(cur, path);
     __asm__ volatile("mov %0, %%cr3" ::"r"(V2P(pml4v)) : "memory");
     pml4_free(old);
-    // 戻り先を新しいプログラムの入り口にし、レジスタを空にする
+    // 戻り先を新しいプログラムの入り口にし、レジスタを空にする（SSE のレジスタも）
     *r = (struct regs){.rip = entry, .cs = 0x23, .rflags = 0x202, .rsp = sp, .ss = 0x1b};
+    fpu_init_state(cur);
+    __asm__ volatile("fxrstor %0" ::"m"(cur->fpu));
     return 0;
 }
 

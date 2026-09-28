@@ -35,7 +35,21 @@ extern u64 isr_table[48];
 
 void cpu_set_kernel_stack(u64 top) { tss.rsp0 = top; }
 
+// ユーザーのプログラムは SSE（xmm レジスタ）を使う。CPU は OS が宣言しない限り SSE の命令を例外（存在しない命令）にするので、
+// CR0.EM を落として CR0.MP を立て、CR4.OSFXSR と CR4.OSXMMEXCPT を立てる。カーネル自身は SSE を使わないようにビルドしている
+static void sse_init(void) {
+    u64 cr0, cr4;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 = (cr0 & ~(1UL << 2)) | (1UL << 1);
+    __asm__ volatile("mov %0, %%cr0" ::"r"(cr0));
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1UL << 9) | (1UL << 10);
+    __asm__ volatile("mov %0, %%cr4" ::"r"(cr4));
+    __asm__ volatile("fninit");
+}
+
 void cpu_init(void) {
+    sse_init();
     u64 base = (u64)&tss, limit = sizeof tss - 1;
     gdt[5] = (limit & 0xffff) | ((base & 0xffffff) << 16) | (0x89UL << 40) | (((limit >> 16) & 0xf) << 48) |
              (((base >> 24) & 0xff) << 56);

@@ -44,6 +44,7 @@ void kmain(unsigned int magic, unsigned int mbinfo) {
         vfs_init(0, 0);
     }
 
+    clock_init();
     cpu_init();
     irq_init();
     syscall_init();
@@ -54,8 +55,9 @@ void kmain(unsigned int magic, unsigned int mbinfo) {
     if (str_eq(cmdline, "test=ud2")) __asm__ volatile("ud2");
     if (str_eq(cmdline, "test=pagefault")) *(volatile u64 *)0x8000000000UL = 1;
 
-    // 起動オプション "run=パス 引数..." があれば、initramfs のそのプログラムを最初のプロセスとして動かす
-    if (cmdline[0] == 'r' && cmdline[1] == 'u' && cmdline[2] == 'n' && cmdline[3] == '=') {
+    // 最初のプロセスとして "run=パス 引数..." のプログラムを動かす。無ければ Linux と同じく /init（test=keys ならキー入力の確認）
+    if (!str_eq(cmdline, "test=keys")) {
+        if (!(cmdline[0] == 'r' && cmdline[1] == 'u' && cmdline[2] == 'n' && cmdline[3] == '=')) cmdline = "run=/init";
         static char buf[256];
         static char *argv[16];
         int argc = 0, n = 0;

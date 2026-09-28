@@ -3,7 +3,7 @@
 
 extern u64 pml4[512];  // boot.S が作ったカーネルのページテーブル
 
-static u64 next_free, free_end;
+static u64 next_free, free_end, free_start_;
 static u64 free_list;  // 返されたページの連結リスト（先頭の 8 バイトに次のページ）
 
 void kmemset(void *d, int c, size_t n) {
@@ -18,7 +18,7 @@ void kmemcpy(void *d, const void *s, size_t n) {
 }
 
 void mm_init(u64 start, u64 end) {
-    next_free = (start + PAGE - 1) & ~(PAGE - 1);
+    next_free = free_start_ = (start + PAGE - 1) & ~(PAGE - 1);
     free_end = end & ~(PAGE - 1);
 }
 
@@ -37,7 +37,13 @@ u64 page_alloc(void) {
     return p;
 }
 
-u64 mm_free_pages(void) { return (free_end - next_free) / PAGE; }
+u64 mm_total_pages(void) { return (free_end - free_start_) / PAGE; }
+
+u64 mm_free_pages(void) {
+    u64 n = (free_end - next_free) / PAGE;
+    for (u64 p = free_list; p; p = *(u64 *)P2V(p)) n++;
+    return n;
+}
 
 void page_free(u64 pa) {
     *(u64 *)P2V(pa) = free_list;
