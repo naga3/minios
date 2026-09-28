@@ -3,6 +3,13 @@
 # build/models.img（./build-models.sh で作る）があれば、モデルのディスクをつなぎ、ローカル LLM（grow）が動くメモリと CPU にする
 set -e
 cd "$(dirname "$0")"
+# ./run.sh scratch: Linux の代わりに自作カーネル（kernel/）で起動する
+if [ "$1" = scratch ]; then
+    kernel/build.sh
+    exec qemu-system-x86_64 -kernel build/scratch/kernel.elf -m 256M \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+        -display none -serial mon:stdio -no-reboot
+fi
 ./build.sh
 # KVM が使えれば使う。使えなければソフトウェアエミュレーション
 accel="-accel tcg"

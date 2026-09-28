@@ -142,6 +142,21 @@ class VM:
             self.p.wait()
 
 
+class ScratchVM(VM):
+    """自作カーネル（kernel/）で起動する VM。QEMU のデバッグ用の終了装置で終わる（終了コードは (code << 1) | 1）"""
+    def __init__(self, extra=()):
+        import tempfile
+        self.mon_dir = tempfile.TemporaryDirectory()
+        self.mon_path = os.path.join(self.mon_dir.name, "mon.sock")
+        self.p = subprocess.Popen(
+            ["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/scratch/kernel.elf", "-m", "256M",
+             "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-no-reboot",
+             "-display", "none", "-serial", "stdio", "-monitor", f"unix:{self.mon_path},server,nowait", *extra],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        self.buf = b""
+        self.log = b""
+
+
 TESTS = []
 
 
@@ -1007,6 +1022,20 @@ def boot_script():
             vm.kill()
     finally:
         os.unlink(disk)
+
+
+@test
+def scratch_boot():
+    """自作カーネルが 64 ビットで起動し、シリアルに出力して、QEMU を終わらせる"""
+    out = subprocess.run([f"{ROOT}/kernel/build.sh"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    vm = ScratchVM()
+    try:
+        vm.expect(r"minios scratch kernel")
+        vm.expect(r"hello from 64-bit long mode")
+        assert vm.wait_exit() == 1  # カーネルが 0 を書いた
+    finally:
+        vm.kill()
 
 
 def main():
