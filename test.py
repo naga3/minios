@@ -1131,23 +1131,53 @@ def scratch_files_match_linux():
     assert linux == scratch, (linux, scratch)
 
 
+class TinyVM(VM):
+    """tiny（アセンブリだけの Forth）で起動する VM"""
+    def __init__(self):
+        import tempfile
+        self.mon_dir = tempfile.TemporaryDirectory()
+        self.mon_path = os.path.join(self.mon_dir.name, "mon.sock")
+        self.buf = self.log = b""
+        self.p = subprocess.Popen(
+            ["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/tiny/kernel.elf", "-display", "none", "-serial", "stdio",
+             "-monitor", f"unix:{self.mon_path},server,nowait", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-no-reboot"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+
+    def line(self, text):
+        """1 行打って、その行の出力（打った行のエコーと、最後の " ok" を除く）を返す"""
+        self.send(text + "\n")
+        out = self.expect(r" ok\r\n\Z").replace("\r\n", "\n")
+        return out.split("\n", 1)[1][:-len(" ok\n")]
+
+
 @test
-def tiny_echo():
-    """いちばん小さい自作カーネル（tiny/）: 1 行読んで、そのまま返す。バックスペースで消せる"""
+def tiny_forth():
+    """tiny の Forth: 計算、スタック、言葉の定義、エラー、基数、bye"""
     out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
-    vm = VM.__new__(VM)
-    vm.buf = vm.log = b""
-    vm.p = subprocess.Popen(["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/tiny/kernel.elf",
-                             "-display", "none", "-serial", "stdio", "-monitor", "none"],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+    vm = TinyVM()
     try:
-        vm.expect(r"minios tiny")
-        vm.expect(r"> \Z")
-        vm.send("hello world\n")
-        assert vm.expect(r"> \Z").replace("\r\n", "\n") == "hello world\nhello world\n> "
-        vm.send("abcx\x7f\x7fd\n")  # x と c を消して d
-        assert vm.expect(r"> \Z").endswith("\nabd\n> ".replace("\n", "\r\n"))
+        vm.expect(r"minios tiny forth\r\n")
+        assert vm.line("2 3 + .") == "5 "
+        assert vm.line("10 3 /mod . .") == "3 1 "            # 商 余り の順に積まれる
+        assert vm.line("1 2 3 .s") == "<3> 1 2 3 "
+        assert vm.line("drop drop drop depth .") == "0 "
+        assert vm.line(": sq dup * ;") == ""                 # 新しい言葉
+        assert vm.line("7 sq .") == "49 "
+        assert vm.line(": cube dup sq * ;") == ""            # 自分で定義した言葉を使って定義する
+        assert vm.line("3 cube .") == "27 "
+        assert vm.line("3 SQ .") == "9 "                     # 大文字と小文字は区別しない
+        assert vm.line("65 emit 66 emit cr") == "AB\n"
+        assert vm.line("-42 . 1 2 < . 2 1 < .") == "-42 -1 0 "
+        assert vm.line("5 0 /mod") == "division by zero\n"
+        assert vm.line("hello 1 2 3") == "? hello\n"         # 知らない言葉: 行の残りは捨てる
+        assert vm.line("depth .") == "0 "
+        assert vm.line("drop") == "stack underflow\n"
+        assert vm.line("16 base ! ff . 10 base !") == "ff "  # 基数（10 も 16 進として読まれる。Forth の落とし穴）
+        assert vm.line("a base ! 255 . \\ ここはコメント") == "255 "
+        assert "cube sq" in vm.line("words")                  # 新しい言葉が先頭に並ぶ
+        vm.send("bye\n")
+        assert vm.wait_exit() == 1                            # QEMU の終了装置
     finally:
         vm.kill()
 

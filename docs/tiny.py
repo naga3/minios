@@ -30,7 +30,7 @@ def arrow(x1, y1, x2, y2, color=INK, label=None, width=3):
         d.text(((x1 + x2) / 2 + 10, (y1 + y2) / 2 - 12), label, font=f(16, True), fill=color)
 
 
-d.text((40, 24), "minios tiny の全体図", font=f(34, True), fill=INK)
+d.text((40, 24), "minios tiny の全体図（echo の版。今は Forth。forth.s を参照）", font=f(34, True), fill=INK)
 d.text((40, 72), "アセンブリだけで 169 行、5.4KB（C もコンパイラも使わない）。割り込みもユーザーモードも使わず、シリアルを見張って 1 行ずつ返す", font=f(19), fill=SUB)
 
 box(40, 150, 300, 150, HW, "QEMU（Multiboot）", ["kernel.elf をメモリに置いて", "32 ビットのまま _start を呼ぶ"])

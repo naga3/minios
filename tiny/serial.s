@@ -1,26 +1,12 @@
-# minios tiny: シリアルから 1 行読んで、そのまま返す（アセンブリだけ）
+# シリアル（COM1）の入出力
 #
-# 関数の約束（このファイルの中だけの決まり）:
-#   引数は rdi・rsi、1 文字は al。返り値は rax。rbx は呼ばれた側が守る。
+# 関数の約束: 1 文字は al、文字列は rsi、書き込み先は rdi。返り値は rax。使ったレジスタは戻す（rax を除く）
     .code64
     .set COM1, 0x3f8
     .set LSR, COM1 + 5                  # 状態: ビット 0 = 文字が届いた、ビット 5 = 送れる
 
     .text
-    .global main
-main:
-    cld                                 # 文字列の命令（lodsb）が前へ進むように
-    mov $banner, %rsi
-    call puts
-1:  mov $prompt, %rsi
-    call puts
-    mov $line, %rdi
-    call read_line
-    mov $line, %rsi
-    call puts
-    mov $newline, %rsi
-    call puts
-    jmp 1b
+    .global putc, getc, puts, read_line
 
 # putc: al の 1 文字を送る（送れるようになるまで待つ）
 putc:
@@ -101,12 +87,7 @@ read_line:
     ret
 
     .section .rodata
-banner:  .asciz "\nminios tiny\n"
-prompt:  .asciz "> "
 newline: .asciz "\n"
 erase:   .asciz "\b \b"
-
-    .section .bss
-line:    .skip 256
 
     .section .note.GNU-stack, "", @progbits

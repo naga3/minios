@@ -4,7 +4,10 @@ set -e
 cd "$(dirname "$0")"
 OUT=../build/tiny
 mkdir -p $OUT
-as --64 -o $OUT/boot.o boot.s
-as --64 -o $OUT/main.o main.s
-ld -nostdlib -static -z max-page-size=0x1000 --no-warn-rwx-segments -T linker.ld -o $OUT/kernel64.elf $OUT/boot.o $OUT/main.o
+objs=""
+for src in boot.s serial.s forth.s; do
+    as --64 -o $OUT/${src%.s}.o $src
+    objs="$objs $OUT/${src%.s}.o"
+done
+ld -nostdlib -static -z max-page-size=0x1000 --no-warn-rwx-segments -T linker.ld -o $OUT/kernel64.elf $objs
 objcopy -O elf32-i386 $OUT/kernel64.elf $OUT/kernel.elf  # QEMU の Multiboot は 32 ビットの ELF しか読まないので、形式だけ変える
