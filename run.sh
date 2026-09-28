@@ -3,6 +3,11 @@
 # build/models.img（./build-models.sh で作る）があれば、モデルのディスクをつなぎ、ローカル LLM（grow）が動くメモリと CPU にする
 set -e
 cd "$(dirname "$0")"
+# ./run.sh tiny: いちばん小さい自作カーネル（tiny/、echo だけ）で起動する
+if [ "$1" = tiny ]; then
+    tiny/build.sh
+    exec qemu-system-x86_64 -kernel build/tiny/kernel.elf -display none -serial mon:stdio
+fi
 # ./run.sh scratch: Linux の代わりに自作カーネル（kernel/）で起動する
 if [ "$1" = scratch ]; then
     ./build.sh          # initramfs（/init やシェル、プログラム）は Linux 版と同じものを使う

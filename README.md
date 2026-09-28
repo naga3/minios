@@ -8,7 +8,13 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 - 外部プログラム: C（progs/）と Go（goprogs/gobox、busybox 方式の 1 本）
 - UEFI 版: OS 全体が 1 ファイル（BOOTX64.EFI、4.3MB）。USB メモリに置けば実機で起動するはず（未確認）
 
-## 自作カーネルの全体図
+## いちばん小さい自作カーネル（tiny/）
+
+`./run.sh tiny` で起動する。アセンブリ 57 行と C 62 行（5.7KB）で、1 行読んでそのまま返すだけ。ここから自分たちの設計で育てる。
+
+![tiny の全体図](docs/tiny.png)
+
+## 自作カーネル（kernel/、Linux 互換）の全体図
 
 ![自作カーネルの全体図](docs/architecture.png)
 
@@ -17,6 +23,7 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 ## 動かす
 
 ```sh
+./run.sh tiny       # いちばん小さい自作カーネル（tiny/、echo だけ）で起動する
 ./run.sh scratch    # Linux の代わりに自作カーネル（kernel/）で起動する
 MINIOS_KERNEL=scratch ./test.py   # 同じテストを自作カーネルに向けて回す
 ./run.sh            # QEMU で起動（シリアル）。Ctrl+C はゲストに届く。QEMU を強制終了するには Ctrl+A → X

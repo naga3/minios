@@ -1131,6 +1131,27 @@ def scratch_files_match_linux():
     assert linux == scratch, (linux, scratch)
 
 
+@test
+def tiny_echo():
+    """いちばん小さい自作カーネル（tiny/）: 1 行読んで、そのまま返す。バックスペースで消せる"""
+    out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    vm = VM.__new__(VM)
+    vm.buf = vm.log = b""
+    vm.p = subprocess.Popen(["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/tiny/kernel.elf",
+                             "-display", "none", "-serial", "stdio", "-monitor", "none"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+    try:
+        vm.expect(r"minios tiny")
+        vm.expect(r"> \Z")
+        vm.send("hello world\n")
+        assert vm.expect(r"> \Z").replace("\r\n", "\n") == "hello world\nhello world\n> "
+        vm.send("abcx\x7f\x7fd\n")  # x と c を消して d
+        assert vm.expect(r"> \Z").endswith("\nabd\n> ".replace("\n", "\r\n"))
+    finally:
+        vm.kill()
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0
