@@ -123,21 +123,42 @@ type testResult struct {
 func grow(args []string) int {
 	fs := flag.NewFlagSet("grow", flag.ContinueOnError)
 	yes := fs.Bool("y", false, "install without asking (for tests)")
-	fs.Usage = func() { fmt.Fprintln(os.Stderr, "usage: grow [-y] <name> <what the program should do...>") }
-	if err := fs.Parse(args); err != nil || fs.NArg() < 2 {
+	showLog := fs.Bool("log", false, "show the versions of a program")
+	undo := fs.Bool("undo", false, "go back to the previous version")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: grow [-y] <name> <what it should do, or how to change it...>\n       grow -log <name>\n       grow -undo <name>")
+	}
+	if err := fs.Parse(args); err != nil || fs.NArg() < 1 {
 		if err == nil {
 			fs.Usage()
 		}
 		return 2
 	}
-	name, request := fs.Arg(0), strings.Join(fs.Args()[1:], " ")
+	name := fs.Arg(0)
 	if !nameRe.MatchString(name) {
 		fmt.Fprintln(os.Stderr, "grow: name must be lowercase letters, digits, - or _ (max 32)")
 		return 2
 	}
+	if *showLog {
+		return growLog(name)
+	}
+	if *undo {
+		return growUndo(name)
+	}
+	if fs.NArg() < 2 {
+		fs.Usage()
+		return 2
+	}
+	request := strings.Join(fs.Args()[1:], " ")
 	if taken := nameTaken(name); taken != "" {
 		fmt.Fprintf(os.Stderr, "grow: %s already exists\n", taken)
 		return 2
+	}
+	// もうあれば育てる（今のソースと、これまでの依頼を AI に渡して、変えてもらう）
+	cur, err := loadCurrent(name)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "grow:", err)
+		return 1
 	}
 	model, err := findModel()
 	if err != nil {
@@ -148,10 +169,16 @@ func grow(args []string) int {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
 	}
+	// 独立したテストに渡す「何をするプログラムか」。育てるときは、これまでの依頼に今回の依頼を足す
+	spec := request
+	if cur != nil {
+		spec = strings.Join(append(cur.history, "Change: "+request), ". ")
+		fmt.Printf("[grow] %s is at version %d. Changing it: %s\n", name, cur.version, request)
+	}
 
 	// 先に、コードを見せずに依頼文だけから独立したテストを書かせる
 	fmt.Printf("[tests] writing independent tests with %s ...\n", filepath.Base(model))
-	independent, err := generateIndependentTests(model, name, request)
+	independent, err := generateIndependentTests(model, name, spec)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
@@ -161,6 +188,9 @@ func grow(args []string) int {
 	}
 
 	prompt := fmt.Sprintf("Write a program named %s: %s", name, request)
+	if cur != nil {
+		prompt = changePrompt(name, cur, request)
+	}
 	var code string
 	var tests []testCase
 	var results []testResult
@@ -181,14 +211,20 @@ func grow(args []string) int {
 		code, tests, err = parseAnswer(answer)
 		if err != nil {
 			fmt.Println("      bad answer:", err)
-			prompt = retryPrompt(name, request, answer, "Your answer was not in the required format: "+err.Error())
+			prompt = retryPrompt(name, spec, answer, "Your answer was not in the required format: "+err.Error())
+			continue
+		}
+		// 育てるのに前の版と同じコードを返してきたら、変わっていない（テストは通ってしまうので、ここで止める。周 28）
+		if cur != nil && strings.TrimSpace(code) == strings.TrimSpace(cur.source) {
+			fmt.Println("      the program did not change")
+			prompt = retryPrompt(name, spec, answer, "Your program is exactly the same as the current version. It must change: "+request)
 			continue
 		}
 		bin := filepath.Join(workDir, name)
 		if out, err := compile(code, bin); err != nil {
 			fmt.Println("      compile error:")
 			fmt.Print(indent(out))
-			prompt = retryPrompt(name, request, answer, "The program did not compile:\n"+out+missingFunctionsHint(out))
+			prompt = retryPrompt(name, spec, answer, "The program did not compile:\n"+out+missingFunctionsHint(out))
 			continue
 		}
 		syscalls = syscallsUsed(code)
@@ -210,7 +246,7 @@ func grow(args []string) int {
 				}
 			}
 			fmt.Print(indent(b.String()))
-			prompt = retryPrompt(name, request, answer, "Some tests failed:\n"+b.String())
+			prompt = retryPrompt(name, spec, answer, "Some tests failed:\n"+b.String())
 			continue
 		}
 		ok = true
@@ -222,8 +258,13 @@ func grow(args []string) int {
 	}
 
 	// 人に見せて承認をもらう
-	fmt.Printf("\n--- %s: %s\n", name, request)
-	fmt.Print(indent(code))
+	if cur != nil {
+		fmt.Printf("\n--- %s version %d -> %d: %s\n", name, cur.version, cur.version+1, request)
+		fmt.Print(lineDiff(cur.source, code))
+	} else {
+		fmt.Printf("\n--- %s: %s\n", name, request)
+		fmt.Print(indent(code))
+	}
 	fmt.Printf("--- allowed system calls (enforced with seccomp): %s\n", strings.Join(syscalls, " "))
 	fmt.Println("--- tests:")
 	for _, r := range results {
@@ -233,11 +274,15 @@ func grow(args []string) int {
 		fmt.Println("not installed")
 		return 1
 	}
-	if err := install(name, request, model, code, filepath.Join(workDir, name), attempt, syscalls, results); err != nil {
+	version, history := 1, []string{request}
+	if cur != nil {
+		version, history = cur.version+1, append(cur.history, request)
+	}
+	if err := install(name, request, model, code, filepath.Join(workDir, name), attempt, syscalls, results, version, history); err != nil {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
 	}
-	fmt.Printf("installed %s/%s (record: %s/%s)\n", installDir, name, recordDir, name)
+	fmt.Printf("installed %s/%s version %d (record: %s/%s)\n", installDir, name, version, recordDir, name)
 	return 0
 }
 
@@ -457,8 +502,9 @@ func confirm(question string) bool {
 	return strings.TrimSpace(strings.ToLower(line)) == "y"
 }
 
-func install(name, request, model, code, bin string, attempts int, syscalls []string, results []testResult) error {
-	for _, d := range []string{installDir, recordDir, sourceDir} {
+func install(name, request, model, code, bin string, attempts int, syscalls []string, results []testResult, version int, history []string) error {
+	vdir := versionDir(name, version)
+	for _, d := range []string{installDir, recordDir, sourceDir, vdir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
@@ -479,6 +525,10 @@ func install(name, request, model, code, bin string, attempts int, syscalls []st
 	var rec strings.Builder
 	fmt.Fprintf(&rec, "name %s\n", name)
 	fmt.Fprintf(&rec, "request %s\n", strings.ReplaceAll(request, "\n", " "))
+	fmt.Fprintf(&rec, "version %d\n", version)
+	for _, h := range history {
+		fmt.Fprintf(&rec, "history %s\n", strings.ReplaceAll(h, "\n", " "))
+	}
 	fmt.Fprintf(&rec, "model %s\n", filepath.Base(model))
 	fmt.Fprintf(&rec, "model-sha256 %s\n", modelHash)
 	fmt.Fprintf(&rec, "source %s\n", src)
@@ -494,10 +544,179 @@ func install(name, request, model, code, bin string, attempts int, syscalls []st
 		fmt.Fprintf(&rec, "%s %s => %s\n", key, argsString(r.tc.args), r.tc.expected)
 	}
 	fmt.Fprintf(&rec, "installed %s\n", time.Now().UTC().Format(time.RFC3339))
-	if err := writeFileSync(filepath.Join(recordDir, name), []byte(rec.String()), 0o644); err != nil {
-		return err
+	// 版ごとに残す（grow -undo で戻せるように）。それから今の版として置く
+	files := []struct {
+		path string
+		data []byte
+		mode os.FileMode
+	}{
+		{filepath.Join(vdir, "source.c"), []byte(code), 0o644},
+		{filepath.Join(vdir, "binary"), binData, 0o755},
+		{filepath.Join(vdir, "record"), []byte(rec.String()), 0o644},
+		{src, []byte(code), 0o644},
+		{filepath.Join(recordDir, name), []byte(rec.String()), 0o644},
+		{filepath.Join(installDir, name), binData, 0o755},
 	}
-	return writeFileSync(filepath.Join(installDir, name), binData, 0o755)
+	for _, f := range files {
+		if err := writeFileSync(f.path, f.data, f.mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ---- 育てる（今の版を読む、版の履歴、元に戻す） ----
+
+type current struct {
+	version int
+	history []string // これまでの依頼（最初の依頼から順に）
+	source  string
+}
+
+func versionDir(name string, version int) string {
+	return filepath.Join(recordDir, "versions", name, fmt.Sprint(version))
+}
+
+func readRecord(path string) (map[string][]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	rec := map[string][]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if k, v, ok := strings.Cut(line, " "); ok {
+			rec[k] = append(rec[k], v)
+		}
+	}
+	return rec, nil
+}
+
+// /data/bin/<name> が grow で入れたものなら、今の版を返す。無ければ nil（新しく作る）
+func loadCurrent(name string) (*current, error) {
+	rec, err := readRecord(filepath.Join(recordDir, name))
+	if os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(installDir, name)); err == nil {
+			return nil, fmt.Errorf("%s/%s exists but has no grow record (trusted by hand); it cannot be grown", installDir, name)
+		}
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(rec["source"]) == 0 {
+		return nil, fmt.Errorf("%s/%s has no source to grow from (trusted by hand)", installDir, name)
+	}
+	src, err := os.ReadFile(rec["source"][0])
+	if err != nil {
+		return nil, err
+	}
+	cur := &current{version: 1, source: string(src), history: rec["history"]}
+	if v := rec["version"]; len(v) > 0 {
+		fmt.Sscan(v[0], &cur.version)
+	}
+	if len(cur.history) == 0 { // 版を記録する前（周 27 まで）に入れたもの
+		cur.history = rec["request"]
+	}
+	return cur, nil
+}
+
+func changePrompt(name string, cur *current, request string) string {
+	return fmt.Sprintf("Here is the current program named %s. What it does so far: %s.\n```c\n%s```\n\n"+
+		"Change it: %s\nAnswer with the full new program and 3 tests for the new behavior, in the same format.",
+		name, strings.Join(cur.history, ". "), cur.source, request)
+}
+
+func growLog(name string) int {
+	rec, err := readRecord(filepath.Join(recordDir, name))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "grow: %s was not made with grow\n", name)
+		return 1
+	}
+	version := 1
+	if v := rec["version"]; len(v) > 0 {
+		fmt.Sscan(v[0], &version)
+	}
+	history := rec["history"]
+	if len(history) == 0 {
+		history = rec["request"]
+	}
+	for i, h := range history {
+		mark := " "
+		if i+1 == version {
+			mark = "*"
+		}
+		fmt.Printf("%s %d  %s\n", mark, i+1, h)
+	}
+	return 0
+}
+
+func growUndo(name string) int {
+	cur, err := loadCurrent(name)
+	if err != nil || cur == nil {
+		fmt.Fprintf(os.Stderr, "grow: %s was not made with grow\n", name)
+		return 1
+	}
+	if cur.version <= 1 {
+		fmt.Fprintf(os.Stderr, "grow: %s is at version 1; there is nothing to go back to\n", name)
+		return 1
+	}
+	prev := versionDir(name, cur.version-1)
+	for _, f := range []struct {
+		from, to string
+		mode     os.FileMode
+	}{
+		{filepath.Join(prev, "source.c"), filepath.Join(sourceDir, name+".c"), 0o644},
+		{filepath.Join(prev, "record"), filepath.Join(recordDir, name), 0o644},
+		{filepath.Join(prev, "binary"), filepath.Join(installDir, name), 0o755},
+	} {
+		data, err := os.ReadFile(f.from)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "grow:", err)
+			return 1
+		}
+		if err := writeFileSync(f.to, data, f.mode); err != nil {
+			fmt.Fprintln(os.Stderr, "grow:", err)
+			return 1
+		}
+	}
+	os.RemoveAll(versionDir(name, cur.version))
+	fmt.Printf("%s is back at version %d\n", name, cur.version-1)
+	return 0
+}
+
+// 行ごとの差分（最長共通部分列）。"- " は消えた行、"+ " は増えた行
+func lineDiff(before, after string) string {
+	a := strings.Split(strings.TrimRight(before, "\n"), "\n")
+	b := strings.Split(strings.TrimRight(after, "\n"), "\n")
+	lcs := make([][]int, len(a)+1)
+	for i := range lcs {
+		lcs[i] = make([]int, len(b)+1)
+	}
+	for i := len(a) - 1; i >= 0; i-- {
+		for j := len(b) - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else {
+				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
+			}
+		}
+	}
+	var out strings.Builder
+	i, j := 0, 0
+	for i < len(a) || j < len(b) {
+		switch {
+		case i < len(a) && j < len(b) && a[i] == b[j]:
+			out.WriteString("    " + a[i] + "\n")
+			i, j = i+1, j+1
+		case j < len(b) && (i == len(a) || lcs[i][j+1] >= lcs[i+1][j]):
+			out.WriteString("  + " + b[j] + "\n")
+			j++
+		default:
+			out.WriteString("  - " + a[i] + "\n")
+			i++
+		}
+	}
+	return out.String()
 }
 
 // 書いてから fsync し、rename で置き換える（途中で電源が落ちても壊れたファイルを残さない。周 4・周 12）

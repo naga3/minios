@@ -27,6 +27,7 @@ minios# ping 10.0.2.2
 minios# fetch https://example.com/
 minios# echo hello > /data/note      # /data は再起動しても残る
 minios# grow sum print the sum of the integer arguments   # OS の中の AI がプログラムを書いて入れる
+minios# grow sum print the result followed by a newline  # もうあれば育てる（-log で履歴、-undo で戻す）
 minios# shutdown
 ```
 

@@ -672,7 +672,7 @@ def grow_program():
             assert "--- allowed system calls (enforced with seccomp): exit_group write" in out, out
             vm.send("y\n")
             out = vm.expect(PROMPT)
-            assert "installed /data/bin/sum (record: /data/bin/.grow/sum)" in out, out
+            assert "installed /data/bin/sum version 1 (record: /data/bin/.grow/sum)" in out, out
             assert cmd(vm, "sum 1 2 3") == "6"
             assert cmd(vm, "sum 10 20 12") == "42"
             assert cmd(vm, "sum 1 -2 3") == "2"
@@ -681,9 +681,22 @@ def grow_program():
                         "model qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
                         "model-sha256 cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
                         "source /data/src/sum.c", "source-sha256 ", "binary-sha256 ", "attempts ",
+                        "version 1", "history print the sum of the integer arguments",
                         "syscalls exit_group write", "test ", "independent-test -1 -2 -3 => -6", "installed "):
                 assert key in rec, rec
             assert '#include "crt.h"' in cmd(vm, "cat /data/src/sum.c")
+            # 育てる: 同じ名前でもう一度 grow すると、今のソースを渡して変えてもらい、版が上がる。-log で履歴、-undo で戻す
+            out = cmd(vm, "grow -y sum print the result followed by a newline", timeout=400)
+            if "installed /data/bin/sum version 2" in out:
+                assert "--- sum version 1 -> 2: print the result followed by a newline" in out, out
+                assert cmd(vm, "grow -log sum") == "  1  print the sum of the integer arguments\n* 2  print the result followed by a newline"
+                assert cmd(vm, "grow -undo sum") == "sum is back at version 1"
+            else:
+                print("  (the model could not grow sum this time)")
+                assert "grow: gave up after 3 attempts" in out, out
+            assert cmd(vm, "grow -log sum") == "* 1  print the sum of the integer arguments"
+            assert cmd(vm, "sum 1 -2 3") == "2"
+            assert cmd(vm, "grow -undo sum") == "grow: sum is at version 1; there is nothing to go back to\n[exit 1]"
             assert cmd(vm, "grow cat x") == "grow: shell builtin cat already exists\n[exit 2]"  # 組み込みや既存の名前は使えない
             assert cmd(vm, "grow grep x") == "grow: /bin/grep already exists\n[exit 2]"
         finally:
