@@ -47,6 +47,7 @@ OS（画面、キーボード、割り込み）はアセンブリで、ゲーム
 ![ROBO JUMP のタイトル](docs/tiny-jump.png)
 ![2-1](docs/tiny-jump-play.png)
 ![1-4 のボス](docs/tiny-jump-boss.png)
+![キャラクター](docs/tiny-jump-characters.png)
 
 ## 自作カーネル（kernel/、Linux 互換）の全体図
 
