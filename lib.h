@@ -171,6 +171,13 @@ static void print_u(unsigned long v) {
     print(b + i);
 }
 
+// dst に src を写す（大きさ size まで。NUL 終端する）
+static void str_copy(char *dst, size_t size, const char *src) {
+    size_t n = 0;
+    while (src[n] && n < size - 1) dst[n] = src[n], n++;
+    dst[n] = 0;
+}
+
 // 文字列を数に（libc と同じ名前と振る舞い: 先頭の空白を飛ばし、符号を読み、数字が続く限り読む）。
 // grow の AI が毎回 atol を使おうとし、自分で書くと負の数でつまずいた（周 24、周 29）。AI が期待する形に API を合わせた
 static long atol(const char *s) {
@@ -211,6 +218,7 @@ static const char *strerror(long err) {
     case 1:  return "operation not permitted";
     case 2:  return "no such file or directory";
     case 5:  return "I/O error";
+    case 7:  return "too long";
     case 9:  return "bad file descriptor";
     case 12: return "out of memory";
     case 13: return "permission denied";
@@ -272,6 +280,30 @@ static long read_file(const char *path, char *buf, size_t size) {
     syscall3(SYS_close, fd, 0, 0);
     buf[n] = 0;
     return n;
+}
+
+// 標準入力から 1 行読む（改行は含めない）。長さを返す。入力の終わりなら -1。
+// 1 バイトずつ読むので遅いが、対話するプログラムには十分（grow で作るエディタなどのため。周 30）
+static long read_line(char *buf, size_t size) {
+    size_t n = 0;
+    char c;
+    long r;
+    while ((r = syscall3(SYS_read, 0, &c, 1)) == 1) {
+        if (c == '\n') break;
+        if (n < size - 1) buf[n++] = c;
+    }
+    buf[n] = 0;
+    if (r <= 0 && n == 0) return -1;
+    return n;
+}
+
+// path に data の n バイトを書く（無ければ作り、あれば中身を置き換える）。0 か負のエラー番号
+static long write_file(const char *path, const char *data, size_t n) {
+    long fd = syscall3(SYS_open, path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return fd;
+    write_all(fd, data, n);
+    syscall3(SYS_close, fd, 0, 0);
+    return 0;
 }
 
 struct linux_dirent64 {

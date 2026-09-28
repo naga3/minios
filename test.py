@@ -205,6 +205,8 @@ def basic_commands():
         assert cmd(vm, "echo  hello   world ") == "hello world", "echo"
         assert cmd(vm, "") == "", "empty line"
         assert cmd(vm, "nosuch x") == "nosuch: command not found"
+        long_line = "echo " + "x" * 3000                      # 256 バイトを超える行も 1 行として読む（周 30）
+        assert cmd(vm, long_line) == "x" * 3000
     finally:
         vm.kill()
 
@@ -245,6 +247,12 @@ def files_and_redirect():
         assert re.search(r"^d +\d+  sub/$", cmd(vm, "ls /tmp"), re.M)
         assert cmd(vm, "cat nosuch") == "nosuch: no such file or directory"
         assert cmd(vm, "echo x > /nosuchdir/f") == "/nosuchdir/f: no such file or directory"
+        assert cmd(vm, "cat < a.txt") == cmd(vm, "cat a.txt")           # 入力のリダイレクト（組み込み）
+        assert cmd(vm, "grep Linux < a.txt").startswith("Linux 7.2.8 ")  # 入力のリダイレクト（外部プログラム）
+        assert cmd(vm, "grep Linux < a.txt > b.txt") == ""               # 入力と出力を両方
+        assert cmd(vm, "cat b.txt").startswith("Linux 7.2.8 ")
+        assert cmd(vm, "cat < nosuch") == "nosuch: no such file or directory"
+        assert cmd(vm, "rm b.txt") == ""
         assert cmd(vm, "rm a.txt sub") == ""
         assert cmd(vm, "ls") == ""
         assert cmd(vm, "cd /") == ""
@@ -362,6 +370,8 @@ def no_network():
 def external_programs():
     vm = booted()
     try:
+        many = " ".join(f"w{i}" for i in range(100))            # 引数は 31 個を超えても渡る（周 30）
+        assert cmd(vm, "hello " + many).endswith(many + " env=3")
         out = cmd(vm, "hello a b")
         assert re.fullmatch(r"hello from pid \d+ \(parent \d+\) a b env=3", out), out
         assert cmd(vm, "/bin/hello") .startswith("hello from pid ")

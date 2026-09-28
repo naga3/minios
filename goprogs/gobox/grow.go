@@ -53,15 +53,23 @@ Available functions (from crt.h):
   size_t slen(const char *s);             // string length
   int seq(const char *a, const char *b);  // 1 if the strings are equal
   int is_digits(const char *s);           // 1 if s is a non-empty string of 0-9
+  void str_copy(char *dst, size_t size, const char *src);  // copy a string (NUL-terminated)
+  char *next_word(char **p);              // split a line into words: char *p = line; char *w; while ((w = next_word(&p))) ...
+                                          // (it writes NUL into the line; there is no strtok)
+  long read_line(char *buf, size_t size); // read one line from stdin without the newline; -1 at the end of input
   long read_file(const char *path, char *buf, size_t size);  // bytes read, or negative on error
+  long write_file(const char *path, const char *data, size_t n);  // create or replace a file; 0 or negative on error
   void print_err(const char *what, long err);  // print an error to stderr
   long syscall3(long n, long a, long b, long c); SYS_read, SYS_write: raw system calls
-  To read stdin: long n = syscall3(SYS_read, 0, buf, sizeof buf);
+Programs that read commands from stdin must not print prompts or banners unless asked (tests compare stdout exactly).
 
 Answer with two fenced blocks and nothing else:
 1. ` + "```c ... ```" + ` the program
 2. ` + "```tests ... ```" + ` 3 test cases, one per line, in the form: arguments => expected output
    Use a single space between arguments. Use (none) when there are no arguments.
+   If the program reads stdin, add | and the input: arguments | input => expected output   (write \n between input lines)
+   If the program writes a file, add the file check at the end: ... => expected output ; file NAME = expected content
+   Tests run in an empty directory, so use file names without a directory. Write \n for newlines in outputs and contents.
 
 Example for the request "print the length of each argument":
 ` + "```c" + `
@@ -90,6 +98,8 @@ Do not copy the example tests; write tests for THIS program.
 const testerPrompt = `You write test cases for a small command-line program. You cannot see the program; you only know what it should do.
 Each test case is one line: arguments => expected output (exactly what the program prints).
 Arguments are separated by single spaces and cannot contain spaces. Use (none) when there are no arguments.
+If the program reads stdin: arguments | input => expected output   (write \n between input lines)
+If the program writes a file, add at the end: ; file NAME = expected content   (tests run in an empty directory)
 Write 3 test cases for THIS program, including at least one edge case. Answer with one fenced block and nothing else.
 Think about what this program prints for each input. Do not copy the example below; it is for a different program.
 
@@ -111,9 +121,42 @@ var (
 	undefRe = regexp.MustCompile(`unresolved reference to '(\w+)'|implicit declaration of function '(\w+)'`)
 )
 
+type fileCheck struct {
+	name, content string
+}
+
+// 1 行のテスト: 引数 [| 標準入力] => 期待する出力 [; file 名前 = 期待する中身]...
 type testCase struct {
 	args     []string
+	stdin    string
 	expected string
+	files    []fileCheck
+}
+
+// テストを 1 行の書式に戻す（表示と記録のため）
+func (tc testCase) String() string {
+	var b strings.Builder
+	b.WriteString(argsString(tc.args))
+	if tc.stdin != "" {
+		b.WriteString(" | " + escapeNL(tc.stdin))
+	}
+	b.WriteString(" => " + escapeNL(tc.expected))
+	for _, f := range tc.files {
+		b.WriteString(" ; file " + f.name + " = " + escapeNL(f.content))
+	}
+	return b.String()
+}
+
+func escapeNL(s string) string   { return strings.ReplaceAll(s, "\n", `\n`) }
+func unescapeNL(s string) string { return strings.ReplaceAll(s, `\n`, "\n") }
+
+// 出力や中身を比べるときは、各行の行末の空白と、前後の空行を無視する
+func normalize(s string) string {
+	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " \t")
+	}
+	return strings.Trim(strings.Join(lines, "\n"), "\n")
 }
 
 type candidate struct {
@@ -124,10 +167,11 @@ type candidate struct {
 }
 
 type testResult struct {
-	tc          testCase
-	independent bool // コードを見ずに書かれたテストか
-	got         string
-	passed      bool
+	tc           testCase
+	independent  bool // コードを見ずに書かれたテストか
+	got          string
+	fileProblems []string
+	passed       bool
 }
 
 func grow(args []string) int {
@@ -201,7 +245,7 @@ func grow(args []string) int {
 		return 1
 	}
 	for _, tc := range independent {
-		fmt.Printf("      %s => %s\n", argsString(tc.args), tc.expected)
+		fmt.Printf("      %s\n", tc)
 	}
 
 	prompt := fmt.Sprintf("Write a program named %s: %s", name, request)
@@ -270,8 +314,17 @@ func grow(args []string) int {
 			for _, r := range results {
 				if !r.passed {
 					// テストの書式（=>）と紛れない文章にする。紛れると、AI がこの文面をテストの欄に写してくる（周 27）
-					fmt.Fprintf(&b, "- With the arguments [%s] the program printed [%s], but it must print [%s].%s\n",
-						strings.Join(r.tc.args, " "), r.got, r.tc.expected, testLabel(r))
+					input := ""
+					if r.tc.stdin != "" {
+						input = fmt.Sprintf(" and the input [%s]", escapeNL(strings.TrimSuffix(r.tc.stdin, "\n")))
+					}
+					if r.got != normalize(r.tc.expected) {
+						fmt.Fprintf(&b, "- With the arguments [%s]%s the program printed [%s], but it must print [%s].%s\n",
+							strings.Join(r.tc.args, " "), input, escapeNL(r.got), escapeNL(r.tc.expected), testLabel(r))
+					}
+					for _, p := range r.fileProblems {
+						fmt.Fprintf(&b, "- With the arguments [%s]%s %s.%s\n", strings.Join(r.tc.args, " "), input, p, testLabel(r))
+					}
 				}
 			}
 			fmt.Print(indent(b.String()))
@@ -307,9 +360,12 @@ func grow(args []string) int {
 	fmt.Println("--- tests:")
 	for _, r := range results {
 		if r.passed {
-			fmt.Printf("    %s => %s  ok%s\n", argsString(r.tc.args), r.tc.expected, testLabel(r))
+			fmt.Printf("    %s  ok%s\n", r.tc, testLabel(r))
 		} else {
-			fmt.Printf("  x %s => %s  but the program printed %s%s\n", argsString(r.tc.args), r.tc.expected, r.got, testLabel(r))
+			fmt.Printf("  x %s  but the program printed %s%s\n", r.tc, escapeNL(r.got), testLabel(r))
+			for _, p := range r.fileProblems {
+				fmt.Printf("      (%s)\n", p)
+			}
 		}
 	}
 	question := fmt.Sprintf("install to %s/%s? [y/N] ", installDir, name)
@@ -386,7 +442,7 @@ var temperatures = [maxAttempts]string{"0", "0.5", "0.9"}
 
 // 乱数の種は試行回数で固定する。同じ依頼からは同じ結果になり、後から再現できる
 func generate(model, prompt, temp string, seed int) (string, error) {
-	return generateWith(model, systemPrompt, prompt, temp, seed, 800)
+	return generateWith(model, systemPrompt, prompt, temp, seed, 2000)
 }
 
 func generateWith(model, system, prompt, temp string, seed, maxTokens int) (string, error) {
@@ -398,9 +454,11 @@ func generateWith(model, system, prompt, temp string, seed, maxTokens int) (stri
 	}
 	cache := filepath.Join(workDir, "cache-"+key+".bin")
 	cmd := exec.Command(llamaBin, "-m", model, "-sysf", sys, "-p", prompt, "--prompt-cache", cache,
-		// 文脈は 4096 トークンで足りる。既定（モデルの最大、Qwen2.5 は 32768）だと 7B では作業領域だけで数 GB になり、
+		// 文脈は 8192 トークンに絞る。既定（モデルの最大、Qwen2.5 は 32768）だと 7B では作業領域だけで数 GB になり、
 		// メモリが足りずに止められた（周 29）。モデルはファイルの写像（mmap）で読み、2 回目からはページキャッシュに載ったものを使う
-		"-c", "4096", "-lm", "mmap",
+		"-c", "8192", "-lm", "mmap",
+		// 長く書くと同じ行を延々と繰り返すことがある（周 30 のエディタ）。少しだけ抑える
+		"--repeat-penalty", "1.05",
 		"-st", "--simple-io", "--temp", temp, "--seed", fmt.Sprint(seed), "-n", fmt.Sprint(maxTokens),
 		"-t", fmt.Sprint(runtime.NumCPU()), "--no-display-prompt")
 	var out bytes.Buffer
@@ -438,6 +496,9 @@ func retryPrompt(name, request, answer, problem string) string {
 func parseAnswer(answer string) (string, []testCase, error) {
 	c := codeRe.FindStringSubmatch(answer)
 	if c == nil {
+		if strings.Contains(answer, "```c") {
+			return "", nil, fmt.Errorf("the answer was cut off before the end of the ```c block; write a shorter program without repeating lines")
+		}
 		return "", nil, fmt.Errorf("no ```c block")
 	}
 	t := testsRe.FindStringSubmatch(answer)
@@ -464,15 +525,29 @@ func parseTests(block string) ([]testCase, error) {
 		if !found {
 			continue
 		}
-		left, right = strings.TrimSpace(left), strings.TrimSpace(right)
-		var args []string
+		var tc testCase
+		left, stdin, hasStdin := strings.Cut(left, "|")
+		left = strings.TrimSpace(left)
 		if left != "(none)" && left != "" {
-			args = strings.Fields(left)
+			tc.args = strings.Fields(left)
 		}
-		if right == "(none)" { // 「何も出さない」を (none) と書いてくることがある
-			right = ""
+		if hasStdin {
+			tc.stdin = unescapeNL(strings.TrimSpace(stdin)) + "\n"
 		}
-		tests = append(tests, testCase{args: args, expected: right})
+		parts := strings.Split(right, "; file ")
+		tc.expected = unescapeNL(strings.TrimSpace(parts[0]))
+		if tc.expected == "(none)" { // 「何も出さない」を (none) と書いてくることがある
+			tc.expected = ""
+		}
+		for _, p := range parts[1:] {
+			name, content, ok := strings.Cut(p, "=")
+			name = strings.TrimSpace(name)
+			if !ok || name == "" || strings.Contains(name, "/") {
+				continue
+			}
+			tc.files = append(tc.files, fileCheck{name, unescapeNL(strings.TrimSpace(content))})
+		}
+		tests = append(tests, tc)
 	}
 	if len(tests) == 0 {
 		return nil, fmt.Errorf("no test cases")
@@ -501,7 +576,7 @@ func testLabel(r testResult) string {
 func generateIndependentTests(model, request string) ([]testCase, error) {
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
-		answer, err := generateWith(model, testerPrompt, request, "0.3", 100+attempt, 300)
+		answer, err := generateWith(model, testerPrompt, request, "0.3", 100+attempt, 500)
 		if err != nil {
 			return nil, err
 		}
@@ -520,25 +595,49 @@ func generateIndependentTests(model, request string) ([]testCase, error) {
 	return nil, fmt.Errorf("independent tests: %v", lastErr)
 }
 
+// テストは 1 件 5 秒まで、空のディレクトリで実行する。出力とファイルの中身は normalize してから比べる
 func runTests(bin string, syscalls []string, tests []testCase, independent bool) []testResult {
 	var results []testResult
 	for _, tc := range tests {
+		dir, err := os.MkdirTemp(workDir, "run-")
+		if err != nil {
+			results = append(results, testResult{tc: tc, independent: independent, got: "(" + err.Error() + ")"})
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		cmd := exec.CommandContext(ctx, sandboxBin, append([]string{strings.Join(syscalls, ","), bin}, tc.args...)...)
-		cmd.Stdin = strings.NewReader("")
+		cmd.Dir = dir
+		cmd.Stdin = strings.NewReader(tc.stdin)
 		out, err := cmd.CombinedOutput()
 		// cancel より先に調べる。cancel した後の ctx.Err() は、時間切れでなくても nil でなくなる（周 24 で踏んだ）
 		timedOut := ctx.Err() == context.DeadlineExceeded
 		cancel()
-		got := strings.TrimSpace(string(out))
+		got := normalize(string(out))
 		if timedOut {
 			got = "(timed out)"
 		} else if err != nil && strings.Contains(err.Error(), "bad system call") { // SIGSYS: seccomp に止められた
 			got = strings.TrimSpace(got + " (stopped: used a system call that is not allowed)")
+		} else if err != nil && strings.HasPrefix(err.Error(), "signal: ") {
+			// 落ちる前に何か出力していても、落ちたことを必ず伝える（周 30: ">" と出してから落ちたのに、">" としか報告していなかった）
+			got = strings.TrimSpace(got + " (crashed: " + strings.TrimPrefix(err.Error(), "signal: ") + ")")
 		} else if err != nil && got == "" {
 			got = "(" + err.Error() + ")"
 		}
-		results = append(results, testResult{tc: tc, independent: independent, got: got, passed: got == tc.expected})
+		r := testResult{tc: tc, independent: independent, got: got, passed: got == normalize(tc.expected)}
+		for _, f := range tc.files {
+			data, err := os.ReadFile(filepath.Join(dir, f.name))
+			content := normalize(string(data))
+			if err != nil {
+				content = "(no such file)"
+			}
+			if content != normalize(f.content) {
+				r.passed = false
+				r.fileProblems = append(r.fileProblems, fmt.Sprintf("the file %s contained [%s], but it must contain [%s]",
+					f.name, escapeNL(content), escapeNL(f.content)))
+			}
+		}
+		os.RemoveAll(dir)
+		results = append(results, r)
 	}
 	return results
 }
@@ -548,6 +647,7 @@ var apiSyscalls = map[string][]string{
 	"print": {"write"}, "print_u": {"write"}, "print_i": {"write"}, "print_c": {"write"}, "print_u_pad": {"write"},
 	"write_all": {"write"}, "print_err": {"write"},
 	"read_file": {"open", "read", "close"}, "each_dirent": {"open", "getdents64", "close"},
+	"read_line": {"read"}, "write_file": {"open", "write", "close"},
 	"sha256_file": {"open", "read", "close"}, "signal": {"rt_sigaction"},
 }
 
@@ -620,7 +720,7 @@ func install(name, request, model, code, bin string, attempts int, syscalls []st
 		if !r.passed { // テストと食い違ったまま、人が承認した
 			key = "disagreed-" + key
 		}
-		fmt.Fprintf(&rec, "%s %s => %s\n", key, argsString(r.tc.args), r.tc.expected)
+		fmt.Fprintf(&rec, "%s %s\n", key, r.tc)
 	}
 	fmt.Fprintf(&rec, "installed %s\n", time.Now().UTC().Format(time.RFC3339))
 	// 版ごとに残す（grow -undo で戻せるように）。それから今の版として置く

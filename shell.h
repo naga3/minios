@@ -455,7 +455,7 @@ static const struct {
     {"ifconfig", cmd_ifconfig, "network interfaces"},
     {"ping",     cmd_ping,     "ping <a.b.c.d> [count]"},
     {"source",   cmd_source,   "run commands from a file"},
-    {"echo",     cmd_echo,     "print arguments (cmd > file, >> to append)"},
+    {"echo",     cmd_echo,     "print arguments (cmd > file, >> to append, < file for input)"},
     {"clear",    cmd_clear,    "clear the screen"},
     {"exit",     cmd_exit,     "end this shell (a new one starts)"},
     {"shutdown", cmd_shutdown, "power off (exit QEMU)"},
@@ -593,21 +593,44 @@ static int find_builtin(const char *name) {
     return -1;
 }
 
-// "cmd args > file" / ">> file" のリダイレクトを取り除き、行き先のファイルを開いて返す。無ければ 1（標準出力のまま）
-static long open_redirect(char *line) {
-    char *gt = 0;
-    for (char *p = line; *p; p++)
-        if (*p == '>') { gt = p; break; }
-    if (!gt) return 1;
-    int flags = O_WRONLY | O_CREAT | O_TRUNC;
-    *gt = 0;
-    char *rest = gt + 1;
-    if (*rest == '>') { flags = O_WRONLY | O_CREAT | O_APPEND; rest++; }
-    char *path = next_word(&rest);
-    if (!path) { print_err(">", -22); return -22; }
-    long fd = syscall3(SYS_open, path, flags, 0644);
-    if (fd < 0) print_err(path, fd);
-    return fd;
+// リダイレクト（"< file"、"> file"、">> file"）を行から取り除き（空白に置き換える）、開いたファイルを fds に返す。
+// fds[0] は標準入力、fds[1] は標準出力の行き先（無ければ -1）。0 か負のエラー番号（エラーは出力済み）
+static long open_redirects(char *line, long fds[2]) {
+    fds[0] = fds[1] = -1;
+    for (char *p = line; *p; p++) {
+        if (*p != '<' && *p != '>') continue;
+        int in = *p == '<';
+        int flags = in ? O_RDONLY : O_WRONLY | O_CREAT | O_TRUNC;
+        *p = ' ';
+        char *w = p + 1;
+        if (!in && *w == '>') {
+            flags = O_WRONLY | O_CREAT | O_APPEND;
+            *w++ = ' ';
+        }
+        while (*w == ' ' || *w == '\t') w++;
+        char *e = w;
+        while (*e && *e != ' ' && *e != '\t' && *e != '<' && *e != '>') e++;
+        long fd = -22;
+        if (e == w) {
+            print_err(in ? "<" : ">", fd);
+        } else {
+            char c = *e;
+            *e = 0;
+            fd = syscall3(SYS_open, w, flags, 0644);
+            if (fd < 0) print_err(w, fd);
+            *e = c;
+        }
+        if (fd < 0) {
+            for (int i = 0; i < 2; i++)
+                if (fds[i] >= 0) syscall3(SYS_close, fds[i], 0, 0);
+            return fd;
+        }
+        for (char *k = w; k < e; k++) *k = ' ';
+        if (fds[!in] >= 0) syscall3(SYS_close, fds[!in], 0, 0);
+        fds[!in] = fd;
+        p = e - 1;
+    }
+    return 0;
 }
 
 // 子プロセスの中で 1 段を実行する。組み込みコマンドならその場で実行して終わり、外部プログラムなら execve する
@@ -616,11 +639,12 @@ static void __attribute__((noreturn)) exec_stage(char *line) {
     signal(SIGINT, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
     signal(SIGTTOU, SIG_DFL);
-    long fd = open_redirect(line);
-    if (fd < 0) syscall3(SYS_exit_group, 1, 0, 0);
-    if (fd != 1) {
-        syscall3(SYS_dup2, fd, 1, 0);
-        syscall3(SYS_close, fd, 0, 0);
+    long fds[2];
+    if (open_redirects(line, fds) < 0) syscall3(SYS_exit_group, 1, 0, 0);
+    for (int i = 0; i < 2; i++) {
+        if (fds[i] < 0) continue;
+        syscall3(SYS_dup2, fds[i], i, 0);
+        syscall3(SYS_close, fds[i], 0, 0);
     }
     char *cmd = next_word(&line);
     if (!cmd) syscall3(SYS_exit_group, 0, 0, 0);
@@ -649,11 +673,11 @@ static void __attribute__((noreturn)) exec_stage(char *line) {
             syscall3(SYS_exit_group, 126, 0, 0);
         }
     }
-    char *argv[32];
+    char *argv[256];  // 31 までだと、grow への長い依頼（英語で 31 語を超える）が途中で切れた（周 30）
     int argc = 0;
     argv[argc++] = cmd;
     char *w;
-    while (argc < 31 && (w = next_word(&line))) argv[argc++] = w;
+    while (argc < 255 && (w = next_word(&line))) argv[argc++] = w;
     argv[argc] = 0;
     long e = syscall3(SYS_execve, path, argv, child_env);
     print_err(path, e);
@@ -768,20 +792,22 @@ static void run(char *line) {
         return;
     }
 
-    long fd = open_redirect(line);
-    if (fd < 0) return;
-    long saved = -1;
-    if (fd != 1) {
-        saved = syscall3(SYS_dup, 1, 0, 0);
-        syscall3(SYS_dup2, fd, 1, 0);
-        syscall3(SYS_close, fd, 0, 0);
+    // 組み込みコマンドはシェルの中で動くので、差し替えた標準入出力を後で戻す
+    long fds[2], saved[2] = {-1, -1};
+    if (open_redirects(line, fds) < 0) return;
+    for (int i = 0; i < 2; i++) {
+        if (fds[i] < 0) continue;
+        saved[i] = syscall3(SYS_dup, i, 0, 0);
+        syscall3(SYS_dup2, fds[i], i, 0);
+        syscall3(SYS_close, fds[i], 0, 0);
     }
     char *rest = line;
     next_word(&rest);
     commands[b].fn(rest);
-    if (saved >= 0) {
-        syscall3(SYS_dup2, saved, 1, 0);
-        syscall3(SYS_close, saved, 0, 0);
+    for (int i = 0; i < 2; i++) {
+        if (saved[i] < 0) continue;
+        syscall3(SYS_dup2, saved[i], i, 0);
+        syscall3(SYS_close, saved[i], 0, 0);
     }
 }
 
@@ -825,7 +851,9 @@ static void __attribute__((noreturn)) session(const char *tty, int first) {
     }
 
     // 行編集（エコー、バックスペース）はカーネルの端末（canonical モード）に任せる
-    char line[256];
+    // 端末（canonical モード）は 1 行を最大 4096 バイトまで溜める。それより短い入れ物だと、
+    // 読み残した後半が次の読み込み（grow の承認の [y/N] など）に混ざる（周 30 で踏んだ）
+    static char line[4097];
     for (;;) {
         print("minios# ");
         long n = syscall3(SYS_read, 0, line, sizeof line - 1);
@@ -838,7 +866,15 @@ static void __attribute__((noreturn)) session(const char *tty, int first) {
         }
         if (n == 0) { print("\n"); syscall3(SYS_exit_group, 0, 0, 0); }  // Ctrl+D で終わる。init が起動し直す
         line[n] = 0;
-        if (line[n - 1] == '\n') line[n - 1] = 0;
+        if (line[n - 1] != '\n') {
+            // 改行まで読めなかった（長すぎる行）。残りを読み捨てて、実行しない
+            char rest[256];
+            long r;
+            do r = syscall3(SYS_read, 0, rest, sizeof rest); while (r > 0 && rest[r - 1] != '\n');
+            print_err("line too long", -7 /* E2BIG */);
+            continue;
+        }
+        line[n - 1] = 0;
         run(line);
     }
 }
