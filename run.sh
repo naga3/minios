@@ -5,8 +5,11 @@ set -e
 cd "$(dirname "$0")"
 # ./run.sh scratch: Linux の代わりに自作カーネル（kernel/）で起動する
 if [ "$1" = scratch ]; then
+    ./build.sh          # initramfs（/init やシェル、プログラム）は Linux 版と同じものを使う
     kernel/build.sh
-    exec qemu-system-x86_64 -kernel build/scratch/kernel.elf -m 256M \
+    accel="-accel tcg"
+    [ -r /dev/kvm ] && [ -w /dev/kvm ] && accel="-accel kvm -cpu host"
+    exec qemu-system-x86_64 $accel -kernel build/scratch/kernel.elf -initrd build/initramfs.cpio -m 256M \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none -serial mon:stdio -no-reboot
 fi
