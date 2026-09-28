@@ -8,6 +8,12 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 - 外部プログラム: C（progs/）と Go（goprogs/gobox、busybox 方式の 1 本）
 - UEFI 版: OS 全体が 1 ファイル（BOOTX64.EFI、4.3MB）。USB メモリに置けば実機で起動するはず（未確認）
 
+## 自作カーネルの全体図
+
+![自作カーネルの全体図](docs/architecture.png)
+
+（`python3 docs/architecture.py` で描き直せる）
+
 ## 動かす
 
 ```sh
