@@ -7,12 +7,50 @@
     .set W, 320
 
     .text
-    .global con_putc, con_puts, con_clear, con_color
+    .global con_putc, con_puts, con_clear, con_color, con_goto, con_cursor, con_print_u
 
 # con_color: 文字の色（al）と背景の色（ah）を決める
 con_color:
     mov %al, fg
     mov %ah, bg
+    ret
+
+# con_goto: 文字を書く位置を al 列・ah 行に動かす
+con_goto:
+    push %rax
+    call cursor_off
+    pop %rax
+    mov %al, col
+    mov %ah, row
+    jmp cursor_on
+
+# con_cursor: カーソルを出す（al = 1）・隠す（al = 0）。ゲームの間は隠す
+con_cursor:
+    push %rax
+    call cursor_off
+    pop %rax
+    mov %al, cursor_visible
+    jmp cursor_on
+
+# con_print_u: rax を 10 進で書く（画面へ写す）
+con_print_u:
+    push %rdx
+    push %rsi
+    push %rcx
+    mov $num_buffer + 20, %rsi
+    movb $0, (%rsi)
+    mov $10, %ecx
+1:  xor %edx, %edx
+    div %rcx
+    add $'0', %dl
+    dec %rsi
+    mov %dl, (%rsi)
+    test %rax, %rax
+    jnz 1b
+    call con_puts
+    pop %rcx
+    pop %rsi
+    pop %rdx
     ret
 
 # con_clear: 背景の色で消して、左上へ
@@ -148,11 +186,14 @@ scroll:
     pop %rcx
     ret
 
-# カーソル: 今の位置の一番下の行に線を引く・消す
+# カーソル: 今の位置の一番下の行に線を引く・消す（隠しているときは引かない）
 cursor_on:
+    cmpb $0, cursor_visible
+    je 2f
     push %r8
     movzbl fg, %r8d
     jmp 1f
+2:  ret
 cursor_off:
     push %r8
     movzbl bg, %r8d
@@ -179,6 +220,10 @@ cursor_off:
 row: .byte 0
 col: .byte 0
 fg:  .byte 7                            # 明るい灰色
+cursor_visible: .byte 1
 bg:  .byte 0                            # 黒
+
+    .section .bss
+num_buffer: .skip 21
 
     .section .note.GNU-stack, "", @progbits

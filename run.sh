@@ -4,7 +4,8 @@
 set -e
 cd "$(dirname "$0")"
 # ./run.sh tiny: アセンブリだけの自作カーネル（tiny/。320 × 200・256 色の画面と PS/2 キーボード）で起動する。
-# 画面はウィンドウに出る（WSL なら WSLg）。ウィンドウを閉じると終わる
+# 画面はウィンドウに出る（WSL なら WSLg）。ウィンドウを閉じると終わる。
+# Ctrl+Alt+F でフルスクリーンの切り替え、Ctrl+Alt+G でウィンドウに取られたマウスとキーボードを返してもらう
 if [ "$1" = tiny ]; then
     tiny/build.sh
     exec qemu-system-x86_64 -kernel build/tiny/kernel.elf -display gtk -serial none

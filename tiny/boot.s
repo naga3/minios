@@ -50,6 +50,12 @@ _start:
 
     .code64
 long_mode:
+    xor %eax, %eax                       # データのセグメントを 0（空）にする。QEMU が起動時に使っていた番号のままだと、
+    mov %ax, %ds                         # 割り込みから戻る iretq がその番号を tiny の GDT で探して、例外になる
+    mov %ax, %es
+    mov %ax, %ss
+    mov %ax, %fs
+    mov %ax, %gs
     call main
 2:  hlt
     jmp 2b

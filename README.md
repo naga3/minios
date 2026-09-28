@@ -15,8 +15,10 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 
 - 画面は 320 × 200・256 色（VGA のモード 13h）。裏画面に描いて、present で写す
 - 文字は自作の 8 × 8 のフォント（tiny/font.s。点の絵を書き換えれば形が変わる）で、40 文字 × 25 行
-- キーボードは PS/2。1 行読んで、そのまま返す
-- 目標: この画面で動く小さなゲーム
+- キーボードは PS/2（割り込みで受け取る。矢印キーも）。タイマーは 100 回/秒
+- シェルのコマンドは `help`・`clear`・`snake`。それ以外は打った行をそのまま返す
+- `snake`: スネーク。矢印か WASD で曲がり、Esc でシェルに戻る。壁か自分に当たったら Enter でもう一度
+- QEMU のウィンドウでは、Ctrl+Alt+F でフルスクリーンの切り替え、Ctrl+Alt+G でキーボードとマウスを返してもらう
 
 ![tiny の画面](docs/tiny-screen.png)
 
@@ -29,7 +31,7 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 ## 動かす
 
 ```sh
-./run.sh tiny       # いちばん小さい自作カーネル（tiny/、echo だけ）で起動する
+./run.sh tiny       # いちばん小さい自作カーネル（tiny/、アセンブリだけ。snake で遊べる）で起動する
 ./run.sh scratch    # Linux の代わりに自作カーネル（kernel/）で起動する
 MINIOS_KERNEL=scratch ./test.py   # 同じテストを自作カーネルに向けて回す
 ./run.sh            # QEMU で起動（シリアル）。Ctrl+C はゲストに届く。QEMU を強制終了するには Ctrl+A → X

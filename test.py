@@ -1213,6 +1213,53 @@ def tiny_graphics():
         vm.kill()
 
 
+@test
+def tiny_snake():
+    """tiny: タイマーとキーボードの割り込みで動くスネーク。矢印で曲がり、壁で終わり、Enter でもう一度、Esc でシェルに戻る"""
+    out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    vm = TinyVM()
+
+    def head():
+        """頭（明るい緑）のマス。盤面は画面の 2 行目から"""
+        i = vm.pixels().index(10)
+        return i % 320 // 8, i // 320 // 8 - 1
+
+    def wait(cond, what, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cond():
+                return
+            time.sleep(0.05)
+        raise Timeout(f"{what}: {vm.screen(bg=0)!r}")
+
+    try:
+        vm.wait_screen(">")
+        vm.type_keys("help\n")
+        wait(lambda: "snake" in vm.screen().split("> help")[-1] and vm.screen().endswith(">"), "help")
+        vm.type_keys("snake\n")
+        title = "SNAKE  arrows/WASD  Esc:quit  SCORE 0"
+        wait(lambda: vm.screen(bg=0).startswith(title), "title")
+        px = vm.pixels()
+        assert (px.count(10), px.count(2), px.count(12)) == (64, 128, 64), "head, body, food"  # 1 マス 8 × 8 点
+        assert px.count(8) == (40 * 2 + 22 * 2) * 64, "walls"
+        x0, y0 = head()
+        wait(lambda: head()[0] > x0, "moves right by itself")          # タイマーで勝手に進む
+        vm.monitor("sendkey up")
+        wait(lambda: head()[1] < y0, "turns up")
+        wait(lambda: "GAME OVER" in vm.screen(bg=4), "hits the top wall")   # 赤地の文字
+        assert "Enter: again   Esc: quit" in vm.screen(bg=0)
+        vm.monitor("sendkey ret")
+        wait(lambda: vm.screen(bg=0).startswith(title) and "GAME OVER" not in vm.screen(bg=4), "restart")
+        vm.monitor("sendkey esc")
+        s = vm.wait_screen(">")
+        assert "SNAKE" not in s, s
+        vm.type_keys("hi\n")
+        vm.wait_screen("> hi\nhi\n>")
+    finally:
+        vm.kill()
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0
