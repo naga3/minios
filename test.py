@@ -1260,70 +1260,80 @@ def tiny_snake():
         vm.kill()
 
 
+def robo_state(vm):
+    """ROBO JUMP の状態（robo.h の struct game の先頭）をメモリから読む"""
+    import struct
+    fields = "state stage lives coins score time power cam px py mode".split()
+    nm = subprocess.run(["nm", f"{ROOT}/build/tiny/kernel64.elf"], capture_output=True, text=True).stdout
+    addr = next(int(l.split()[0], 16) for l in nm.splitlines() if l.endswith(" G"))
+    path = os.path.join(vm.mon_dir.name, "g.bin")
+    vm.monitor(f'pmemsave {addr:#x} {4 * len(fields)} "{path}"')
+    for _ in range(50):
+        if os.path.exists(path) and os.path.getsize(path) == 4 * len(fields):
+            break
+        time.sleep(0.02)
+    data = open(path, "rb").read()
+    os.unlink(path)
+    return dict(zip(fields, struct.unpack(f"<{len(fields)}i", data)))
+
+
 @test
-def tiny_jump():
-    """tiny: 横から見たステージを、ロボットが歩いて跳ぶ（キーの押しっぱなし、スプライト、重力、マスとの当たり）。
+def tiny_robo():
+    """tiny: ROBO JUMP（C で書いたゲーム）。テスト用のステージで、箱を叩いて出た電池で大きくなり、跳びながら進んでゴールする。
+    ステージを指定して始められる（jump 8-4）。状態はメモリ（struct game）から読む。
     QEMU の sendkey は 1 つずつ順に押して離すので、2 つを同時に押すときは right-z のように 1 回で送る"""
     out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     vm = TinyVM()
-    SKY, ORANGE, DIRT = 16 + 2 * 36 + 4 * 6 + 5, 16 + 5 * 36 + 3 * 6, 16 + 4 * 36 + 2 * 6 + 1
-    QBLOCK = 122 * 320 + 81                               # ? の箱（5 列 7 行のマス）の左上あたりの 1 点
 
-    def robot():
-        """ロボットの目（明るい水色）の左端の点。立っているときの y は 156"""
-        i = vm.pixels().index(0xb)
-        return i % 320, i // 320
-
-    def wait(cond, what, timeout=5):
+    def wait(cond, what, timeout=10):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if cond():
-                return
-            time.sleep(0.04)
-        raise Timeout(f"{what}: robot {robot()}")
-
-    def highest(key, hold):
-        """跳んで、一番高いところの y"""
-        vm.monitor(f"sendkey {key} {hold}")
-        top, t0 = 999, time.monotonic()
-        while time.monotonic() - t0 < 1.2:
-            top = min(top, robot()[1])
-            time.sleep(0.03)
-        return top
+            g = robo_state(vm)
+            if cond(g):
+                return g
+            time.sleep(0.1)
+        raise Timeout(f"{what}: {robo_state(vm)}")
 
     try:
         vm.wait_screen(">")
-        vm.type_keys("jump\n")
-        wait(lambda: vm.screen(bg=0).startswith("JUMP  arrows  Z/space:jump  Esc:quit"), "title")
-        px = vm.pixels()
-        assert px.count(SKY) > 30000 and px[QBLOCK] == ORANGE, "sky and ? block"
-        assert robot() == (39, 156), robot()                     # 左の地面に立っている
-        long_jump, short_jump = highest("z", 400), highest("spc", 60)  # 長く押すと高く跳ぶ（上にマスの無い所で）
-        assert long_jump < 156 - 55 and 156 - 45 < short_jump < 156 - 15, (long_jump, short_jump)
-        assert robot()[1] == 156, "lands"
-        vm.monitor("sendkey right 300")                            # 押している間だけ歩く
-        wait(lambda: robot()[0] > 50, "walks right")
-        time.sleep(0.6)                                          # 離して止まるまで
-        x = robot()[0]
-        time.sleep(0.4)
-        assert robot()[0] == x, "stops after release"
-        for _ in range(40):                                       # ? の箱の下まで歩いて、下から叩く
-            if 79 <= robot()[0] < 95:
+        vm.type_keys("jump test\n")
+        g = wait(lambda g: g["state"] == 2, "play")                    # ステージの紹介の後、遊ぶ
+        assert "WORLD TEST" in vm.screen(bg=0).split("\n")[0], vm.screen(bg=0)
+        assert (g["power"], g["px"], g["py"], g["lives"]) == (0, 35, 144, 3), g
+        vm.monitor("sendkey z 200")                                     # 真上の箱を叩く。電池は右の段で折り返して戻ってくる
+        g = wait(lambda g: g["power"] == 1, "battery")
+        assert g["py"] == 128 and g["score"] >= 1000, g                 # 大きくなった（背が 2 マス）
+        for _ in range(40):                                             # 右へ跳びながら進んで、ゴールの棒をつかむ
+            vm.monitor("sendkey right-z 400")
+            vm.monitor("sendkey right 200")
+            time.sleep(0.6)
+            if robo_state(vm)["mode"] >= 2:
                 break
-            vm.monitor("sendkey right 100")
-            time.sleep(0.4)
-        vm.monitor("sendkey up 400")
-        wait(lambda: vm.pixels()[QBLOCK] == DIRT, "? block becomes used")
-        vm.monitor("sendkey right-z 500")                         # 段を跳び越えて、穴に落ちる
-        vm.monitor("sendkey right 1500")
-        wait(lambda: "MISS" in vm.screen(bg=4), "falls into the hole")
-        wait(lambda: vm.pixels()[QBLOCK] == ORANGE, "starts over")
+        g = wait(lambda g: g["state"] == 0, "clear, back to the title", 20)   # 城に入り、残り時間を点数にして、タイトルへ
+        assert g["score"] > 1000, g
+        vm.monitor("sendkey esc")
+        vm.wait_screen(">")
+        vm.type_keys("jump 8-4\n")                                     # 最後の城から始める
+        g = wait(lambda g: g["state"] == 2, "8-4")
+        assert g["stage"] == 31 and "WORLD 8-4" in vm.screen(bg=0), g
         vm.monitor("sendkey esc")
         s = vm.wait_screen(">")
-        assert "JUMP" not in s, s
+        assert "WORLD" not in s, s
     finally:
         vm.kill()
+
+
+@test
+def tiny_robo_stages():
+    """ROBO JUMP の 32 のステージを PC の上で作り、スタートからゴールまで跳んで行けるかを確かめる（tools/stagemap.c）"""
+    exe = f"{ROOT}/build/stagemap"
+    out = subprocess.run(["cc", "-Wall", "-I", f"{ROOT}/tiny", "-o", exe, f"{ROOT}/tiny/tools/stagemap.c",
+                          f"{ROOT}/tiny/stages.c"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    out = subprocess.run([exe], capture_output=True, text=True)
+    assert out.returncode == 0, "\n".join(l for l in out.stdout.splitlines() if l.startswith(("==", "!!")))
+    assert out.stdout.count("== ") == 32
 
 
 def main():

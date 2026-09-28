@@ -11,7 +11,7 @@ for src in boot.s irq.s screen.s font.s console.s kbd.s c.s sprite.s snake.s mai
     as --64 -o $OUT/${src%.s}.o $src
     objs="$objs $OUT/${src%.s}.o"
 done
-for src in jump.c pics.c; do
+for src in robo.c actors.c stages.c pics.c; do
     gcc $CFLAGS -c -o $OUT/${src%.c}.o $src
     objs="$objs $OUT/${src%.c}.o"
 done

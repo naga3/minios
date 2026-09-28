@@ -6,7 +6,7 @@
 #                               8 暗い灰色、9 明るい青、a 明るい緑、b 明るい水色、c 明るい赤、d 明るい紫、e 黄、f 白）
 #   そのほかの文字は extra_colors の表の色（256 色のパレットの番号）
 #
-# 関数の約束: x は rdi、y は rsi（どちらも負でもよい）、絵は rdx、rcx が 1 なら左右反転（C の呼び方と同じ並び）。使ったレジスタは戻す（rax を除く）
+# 関数の約束: x は rdi、y は rsi（どちらも負でもよい）、絵は rdx、rcx のビット 0 が 1 なら左右反転・ビット 1 が 1 なら上下反転（C の呼び方と同じ並び）。使ったレジスタは戻す（rax を除く）
     .code64
     .set W, 320
     .set H, 200
@@ -69,8 +69,12 @@ draw_sprite:
     jz 3f
     mov $15, %ebx
     sub %r9, %rbx
-3:  mov %r10, %rax
-    shl $4, %rax
+3:  mov %r10, %rax                      # 上下反転なら下の行から読む
+    test $2, %r8b
+    jz 6f
+    mov $15, %eax
+    sub %r10, %rax
+6:  shl $4, %rax
     add %rax, %rbx
     movzbl (%rdx,%rbx), %ebx
     and $0x7f, %ebx

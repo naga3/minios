@@ -10,20 +10,42 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 
 ## いちばん小さい自作カーネル（tiny/）
 
-`./run.sh tiny` で起動する（画面はウィンドウに出る）。アセンブリだけで書いた、DOS/V 機のような OS。
-ビルドに使うのはアセンブラとリンカ（binutils）だけで、C も既製の言語も使わない。
+`./run.sh tiny` で起動する（画面はウィンドウに出る）。DOS/V 機のような OS。
+OS（画面、キーボード、割り込み）はアセンブリで、ゲームは C（ライブラリなし）で書く。既製のライブラリは使わない。
 
 - 画面は 320 × 200・256 色（VGA のモード 13h）。裏画面に描いて、present で写す
 - 文字は自作の 8 × 8 のフォント（tiny/font.s。点の絵を書き換えれば形が変わる）で、40 文字 × 25 行
 - キーボードは PS/2（割り込みで受け取る。矢印キーも）。タイマーは 100 回/秒
 - 絵は 16 × 16 のスプライト（tiny/sprite.s）。フォントと同じく、ソースに 1 点 1 文字で描く
+- C から OS の関数を呼ぶ入口は tiny/c.s、宣言は tiny/tiny.h
 - シェルのコマンドは `help`・`clear`・`snake`・`jump`。それ以外は打った行をそのまま返す
 - `snake`: スネーク。矢印か WASD で曲がり、Esc でシェルに戻る。壁か自分に当たったら Enter でもう一度
-- `jump`: 横から見たステージを、ロボットが歩いて跳ぶ。左右で歩き、Z・スペース・上で跳ぶ（長く押すと高く）。? の箱は下から叩ける
+- `jump`: ROBO JUMP（下）
 - QEMU のウィンドウでは、Ctrl+Alt+F でフルスクリーンの切り替え、Ctrl+Alt+G でキーボードとマウスを返してもらう
 
+### ROBO JUMP
+
+横スクロールのアクション。ロボットが 8 ワールド × 4 ステージを進み、城のボスを倒して金の歯車を目指す。キャラクターもステージもオリジナル。
+
+| キー | |
+|---|---|
+| 左右（A・D） | 歩く |
+| Z・スペース・上（W） | 跳ぶ（長く押すと高く） |
+| X・Shift | 押しながらで走る。ブラスターを持っていれば弾を撃つ |
+| Enter | 一時停止 |
+| Esc | シェルに戻る |
+
+- タイトルで左右（上下は 4 つずつ）でワールドを選べる。`jump 3-2` ならそのステージから、`jump 3-2 god` ならミスしない（試すとき）
+- 各ワールドは 1 地上、2 地下、3 空（木の上とリフト）、4 城（ファイアバー、溶岩、橋の上のボス。斧に触ると橋が落ちる）
+- 敵: ナット（踏める）、甲羅の虫（踏むと甲羅。蹴ると滑って敵を倒す）、羽の甲羅の虫、土管の花、トゲの虫（踏めない）、砲台と弾、レンチ投げ、ファイアバー、溶岩の火の玉、ボス
+- アイテム: コイン（100 枚で 1UP）、電池（大きくなる）、ブラスター（弾を撃てる）、スター（しばらく無敵）、1UP（隠れた箱にも）
+- ステージは tiny/stages.c に、小さな関数（地面、土管、階段、木など）を並べて書く。
+  `cc -I tiny -o build/stagemap tiny/tools/stagemap.c tiny/stages.c && build/stagemap 0` で PC の上に地図を文字で出せる（跳んでゴールまで行けるかも確かめる）
+
 ![tiny の画面](docs/tiny-screen.png)
-![jump](docs/tiny-jump.png)
+![ROBO JUMP のタイトル](docs/tiny-jump.png)
+![1-1](docs/tiny-jump-1-1.png)
+![1-4 のボス](docs/tiny-jump-boss.png)
 
 ## 自作カーネル（kernel/、Linux 互換）の全体図
 
@@ -34,13 +56,13 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 ## 動かす
 
 ```sh
-./run.sh tiny       # いちばん小さい自作カーネル（tiny/、アセンブリだけ。snake と jump で遊べる）で起動する
+./run.sh tiny       # いちばん小さい自作カーネル（tiny/、snake と ROBO JUMP で遊べる）で起動する
 ./run.sh scratch    # Linux の代わりに自作カーネル（kernel/）で起動する
 MINIOS_KERNEL=scratch ./test.py   # 同じテストを自作カーネルに向けて回す
 ./run.sh            # QEMU で起動（シリアル）。Ctrl+C はゲストに届く。QEMU を強制終了するには Ctrl+A → X
 ./run-efi.sh        # UEFI 版を実機と同じ経路（UEFI → FAT 上の BOOTX64.EFI）で起動
 ./run-efi.sh gui    # 画面のウィンドウも開き、USB キーボードで操作する（WSL なら WSLg）
-./test.py           # 自動テスト（32 個）。ローカル LLM のテストは ./fetch-third-party.sh と ./build-models.sh の後
+./test.py           # 自動テスト。ローカル LLM のテストは ./fetch-third-party.sh と ./build-models.sh の後
 MINIOS_SLOW=1 ./test.py grow_7b        # 7B のモデルで作って育てる（数分）。UEFI 版のテストは ./build-efi.sh の後だけ動く
 MINIOS_INTERNET=1 ./test.py internet   # インターネットに出るテスト（DNS、HTTPS）
 ```

@@ -9,7 +9,7 @@ void fill_rect(long x, long y, long w, long h, int color);
 void present(void);
 void wait_vsync(void);   // 帰線を待つ（この後に present すれば、ちらつかない）
 
-// スプライト: 16 × 16 の絵（1 点 1 文字、256 文字）。flip が 1 なら左右反転。はみ出す分は切る
+// スプライト: 16 × 16 の絵（1 点 1 文字、256 文字）。flip のビット 0 で左右反転、ビット 1 で上下反転。はみ出す分は切る
 void draw_sprite(long x, long y, const char *pic, int flip);
 
 // 文字: 40 文字 × 25 行
@@ -23,9 +23,9 @@ void con_clear(void);             // 背景の色で消して、左上へ
 // キーボード: keys[スキャンコード] が 1 なら押している（矢印は 0x80 を足す）。getc_nowait は貯まった文字（無ければ 0）
 extern volatile unsigned char keys[256];
 unsigned char getc_nowait(void);
-enum { KEY_ESC = 27 };
-enum { SC_W = 0x11, SC_A = 0x1e, SC_S = 0x1f, SC_D = 0x20, SC_Z = 0x2c, SC_SPACE = 0x39,
-       SC_UP = 0xc8, SC_LEFT = 0xcb, SC_RIGHT = 0xcd, SC_DOWN = 0xd0 };
+enum { KEY_ESC = 27, KEY_UP = 0x80, KEY_DOWN = 0x81, KEY_LEFT = 0x82, KEY_RIGHT = 0x83 };
+enum { SC_W = 0x11, SC_A = 0x1e, SC_S = 0x1f, SC_D = 0x20, SC_Z = 0x2c, SC_X = 0x2d, SC_SPACE = 0x39,
+       SC_LSHIFT = 0x2a, SC_RSHIFT = 0x36, SC_UP = 0xc8, SC_LEFT = 0xcb, SC_RIGHT = 0xcd, SC_DOWN = 0xd0 };
 
 // タイマー: ticks は起動してからの回数（1 回 = 10ms）
 extern volatile unsigned long ticks;

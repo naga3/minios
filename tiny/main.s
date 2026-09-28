@@ -32,8 +32,8 @@ main:
     mov $cmd_snake, %rdi
     call streq
     jnz 2f
-    mov $cmd_jump, %rdi
-    call streq
+    mov $cmd_jump, %rdi                 # jump は後ろに引数を付けられる（jump 3-2）
+    call prefix
     jnz 5f
     mov $cmd_clear, %rdi
     call streq
@@ -55,7 +55,8 @@ main:
 4:  mov $help_text, %rsi
     call con_puts
     jmp 1b
-5:  call jump_main
+5:  mov %rax, %rdi                      # C の jump_main(引数)
+    call jump_main
     jmp 1b
 
 # streq: rsi と rdi の文字列が同じなら ZF = 0（jnz で飛べる）
@@ -74,6 +75,35 @@ streq:
     jmp 4f
 3:  xor %al, %al                        # 違う: ZF = 1
 4:  pop %rdi
+    pop %rsi
+    ret
+
+# prefix: rsi の行が rdi の言葉で始まり、その後が行の終わりか空白なら ZF = 0（jnz で飛べる）。rax に残り（空白を飛ばした所）
+prefix:
+    push %rsi
+    push %rdi
+1:  mov (%rdi), %al
+    test %al, %al
+    jz 2f
+    cmp (%rsi), %al
+    jne 5f
+    inc %rsi
+    inc %rdi
+    jmp 1b
+2:  mov (%rsi), %al                     # 言葉の後: 行の終わりか空白
+    test %al, %al
+    jz 3f
+    cmp $' ', %al
+    jne 5f
+3:  cmpb $' ', (%rsi)                   # 空白を飛ばす
+    jne 4f
+    inc %rsi
+    jmp 3b
+4:  mov %rsi, %rax
+    test %rsp, %rsp                     # ZF = 0
+    jmp 6f
+5:  xor %eax, %eax                      # ZF = 1
+6:  pop %rdi
     pop %rsi
     ret
 
@@ -139,7 +169,7 @@ cmd_snake: .asciz "snake"
 cmd_jump:  .asciz "jump"
 cmd_clear: .asciz "clear"
 cmd_help:  .asciz "help"
-help_text: .asciz "snake  play the snake game\njump   run and jump\nclear  clear the screen\nother  echo the line\n"
+help_text: .asciz "snake  play the snake game\njump   ROBO JUMP (jump 3-2: from 3-2)\nclear  clear the screen\nother  echo the line\n"
 prompt:   .asciz "> "
 newline:  .asciz "\n"
 erase:    .asciz "\b \b"
