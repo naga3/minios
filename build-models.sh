@@ -8,6 +8,6 @@ rm -rf build/models && mkdir -p build/models
 ln third_party/models/*.gguf third_party/models/LICENSE-* build/models/
 size=$(du -sm build/models | cut -f1)
 rm -f build/models.img
-truncate -s $((size + 64))M build/models.img
+truncate -s $((size * 105 / 100 + 256))M build/models.img  # ext4 の管理領域とジャーナルの分の余白
 mke2fs -q -t ext4 -L models -d build/models build/models.img
 ls -l build/models.img

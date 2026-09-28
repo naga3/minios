@@ -32,6 +32,7 @@ ACPI                  # CPU の一覧（MADT）。古い MP テーブルには Q
 EXT4_FS               # モデル用のディスク（/models）。ホストの mke2fs -d で root なしにイメージを作れる
 SECCOMP               # プログラムが使えるシステムコールを制限する（grow で入れたプログラムの隔離）
 SECCOMP_FILTER        # その制限を BPF のフィルタで書く
+ADVISE_SYSCALLS       # madvise・fadvise。llama.cpp がモデルをファイルの写像（mmap）として読むのに使う
 
 # ---- 既定で入っているが使わないもの（周 8 で削った） ----
 !VT                   # 画面の仮想コンソール（tty1〜63）。出力はシリアルだけ

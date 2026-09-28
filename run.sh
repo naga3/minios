@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 accel="-accel tcg"
 [ -r /dev/kvm ] && [ -w /dev/kvm ] && accel="-accel kvm -cpu host"
 models="-m 256M"
-[ -f build/models.img ] && models="-m 3G -smp 8 -drive file=build/models.img,format=raw,if=virtio,readonly=on"
+[ -f build/models.img ] && models="-m 8G -smp 8 -drive file=build/models.img,format=raw,if=virtio,readonly=on"
 exec qemu-system-x86_64 $accel \
     -kernel build/bzImage \
     -initrd build/initramfs.cpio \

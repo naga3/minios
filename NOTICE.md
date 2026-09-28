@@ -14,6 +14,7 @@ minios のバイナリ（build.sh が作る bzImage と initramfs、build-efi.sh
 | cpp-httplib、nlohmann/json（llama.cpp が同梱） | /bin/llama-completion | MIT | llama.cpp の vendor/ |
 | libstdc++（llama-completion に静的リンク） | /bin/llama-completion | GPL-3.0 + GCC Runtime Library Exception（配布の義務なし） | ビルドしたホストの Ubuntu の GCC 13 |
 | Qwen2.5-Coder-1.5B-Instruct（4bit 量子化、GGUF） | build/models.img（/models。OS のイメージとは別） | Apache-2.0（本文はディスクの中の LICENSE-Qwen2.5-Coder-1.5B-Instruct） | https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF 。fetch-third-party.sh でリビジョンとハッシュを固定して取得 |
+| Qwen2.5-Coder-7B-Instruct（4bit 量子化、GGUF、2 つに分けたもの） | build/models.img（/models） | Apache-2.0（本文は 1.5B と同じ） | https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF 。fetch-third-party.sh でリビジョンとハッシュを固定して取得 |
 | minios 自身のコード（init、シェル、progs、gobox のコード、ビルド・テストのスクリプト） | /init、/bin | 未定 | このリポジトリ |
 
 ## Linux カーネルのソース（GPL-2.0 の義務）

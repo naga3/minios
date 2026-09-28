@@ -39,7 +39,7 @@ const (
 const systemPrompt = `You write small command-line programs in C for minios, a tiny OS with NO C library.
 Rules:
 - Write exactly one C file. The first line must be: #include "crt.h"
-- Do NOT include any other header. There is no printf, atoi, atol, malloc, stdio.h, stdlib.h or string.h.
+- Do NOT include any other header. There is no printf, malloc, stdio.h, stdlib.h or string.h.
 - Entry point: int main(int argc, char **argv, char **envp). Return 0 on success.
 - Only use the functions listed below. Write any other helper you need yourself.
 
@@ -49,6 +49,7 @@ Available functions (from crt.h):
   void print_i(long v);                   // write a signed number to stdout (use this for negative numbers)
   void print_c(char c);                   // write one character to stdout (print takes a string, not a char)
   void write_all(int fd, const char *s, size_t n);
+  long atol(const char *s);               // string to number, handles a leading - (also: int atoi)
   size_t slen(const char *s);             // string length
   int seq(const char *a, const char *b);  // 1 if the strings are equal
   int is_digits(const char *s);           // 1 if s is a non-empty string of 0-9
@@ -62,25 +63,26 @@ Answer with two fenced blocks and nothing else:
 2. ` + "```tests ... ```" + ` 3 test cases, one per line, in the form: arguments => expected output
    Use a single space between arguments. Use (none) when there are no arguments.
 
-Example for the request "echo the arguments in reverse order":
+Example for the request "print the length of each argument":
 ` + "```c" + `
 #include "crt.h"
 
 int main(int argc, char **argv, char **envp) {
     (void)envp;
-    for (int i = argc - 1; i >= 1; i--) {
-        print(argv[i]);
-        if (i > 1) print(" ");
+    for (int i = 1; i < argc; i++) {
+        print_u(slen(argv[i]));
+        if (i < argc - 1) print(" ");
     }
     print("\n");
     return 0;
 }
 ` + "```" + `
 ` + "```tests" + `
-a b c => c b a
-x => x
+abc de => 3 2
+hello => 5
 (none) =>
 ` + "```" + `
+Do not copy the example tests; write tests for THIS program.
 `
 
 // 独立したテストを書かせるシステムプロンプト。プログラムは見せず、依頼文だけから書かせる
@@ -104,6 +106,7 @@ var (
 	codeRe  = regexp.MustCompile("(?s)```c\\s*\n(.*?)```")
 	testsRe = regexp.MustCompile("(?s)```tests\\s*\n(.*?)```")
 	sysRe   = regexp.MustCompile(`\bSYS_[a-z0-9_]+\b`)
+	splitRe = regexp.MustCompile(`^(.*)-\d{5}-of-(\d{5})\.gguf$`)
 	callRe  = regexp.MustCompile(`\b([a-z_0-9]+)\s*\(`)
 	undefRe = regexp.MustCompile(`unresolved reference to '(\w+)'|implicit declaration of function '(\w+)'`)
 )
@@ -111,6 +114,13 @@ var (
 type testCase struct {
 	args     []string
 	expected string
+}
+
+type candidate struct {
+	code     string
+	results  []testResult
+	syscalls []string
+	attempt  int
 }
 
 type testResult struct {
@@ -125,8 +135,9 @@ func grow(args []string) int {
 	yes := fs.Bool("y", false, "install without asking (for tests)")
 	showLog := fs.Bool("log", false, "show the versions of a program")
 	undo := fs.Bool("undo", false, "go back to the previous version")
+	modelName := fs.String("model", "", "use the model whose file name contains this (default: the largest)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: grow [-y] <name> <what it should do, or how to change it...>\n       grow -log <name>\n       grow -undo <name>")
+		fmt.Fprintln(os.Stderr, "usage: grow [-y] [-model 1.5b] <name> <what it should do, or how to change it...>\n       grow -log <name>\n       grow -undo <name>")
 	}
 	if err := fs.Parse(args); err != nil || fs.NArg() < 1 {
 		if err == nil {
@@ -160,7 +171,7 @@ func grow(args []string) int {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
 	}
-	model, err := findModel()
+	model, err := findModel(*modelName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
@@ -178,7 +189,13 @@ func grow(args []string) int {
 
 	// 先に、コードを見せずに依頼文だけから独立したテストを書かせる
 	fmt.Printf("[tests] writing independent tests with %s ...\n", filepath.Base(model))
-	independent, err := generateIndependentTests(model, name, spec)
+	testerRequest := fmt.Sprintf("The program is named %s. It should: %s", name, request)
+	if cur != nil {
+		// 今の振る舞いと頼まれた変更を分けて伝え、変更の後の振る舞いを書かせる（周 29 では、テスト係が変更を無視して元の振る舞いを期待し続けた）
+		testerRequest = fmt.Sprintf("The program is named %s. Current behavior: %s. Requested change: %s. "+
+			"Write tests for the behavior AFTER the change.", name, strings.Join(cur.history, ". "), request)
+	}
+	independent, err := generateIndependentTests(model, testerRequest)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
@@ -195,6 +212,7 @@ func grow(args []string) int {
 	var tests []testCase
 	var results []testResult
 	var syscalls []string
+	var last *candidate
 	ok := false
 	attempt := 0
 	for attempt = 1; attempt <= maxAttempts && !ok; attempt++ {
@@ -214,12 +232,7 @@ func grow(args []string) int {
 			prompt = retryPrompt(name, spec, answer, "Your answer was not in the required format: "+err.Error())
 			continue
 		}
-		// 育てるのに前の版と同じコードを返してきたら、変わっていない（テストは通ってしまうので、ここで止める。周 28）
-		if cur != nil && strings.TrimSpace(code) == strings.TrimSpace(cur.source) {
-			fmt.Println("      the program did not change")
-			prompt = retryPrompt(name, spec, answer, "Your program is exactly the same as the current version. It must change: "+request)
-			continue
-		}
+		unchanged := cur != nil && strings.TrimSpace(code) == strings.TrimSpace(cur.source)
 		bin := filepath.Join(workDir, name)
 		if out, err := compile(code, bin); err != nil {
 			fmt.Println("      compile error:")
@@ -236,6 +249,22 @@ func grow(args []string) int {
 			}
 		}
 		fmt.Printf("      tests: %d/%d passed (own %d, independent %d)\n", len(results)-failed, len(results), len(tests), len(independent))
+		// 育てるのに前の版と同じコードを返してきたとき: 新しいテストにも全部通るなら、もうそうなっている（変える必要が無い）。
+		// 通らないなら、変わっていない（周 28 では、テストが誤っていて同じコードが version 2 として入った）
+		if unchanged && failed == 0 {
+			fmt.Printf("\n%s already does that (version %d passes the new tests); nothing to change\n", name, cur.version)
+			return 0
+		}
+		if unchanged {
+			fmt.Println("      the program did not change")
+			prompt = retryPrompt(name, spec, answer, "Your program is exactly the same as the current version. It must change: "+request)
+			continue
+		}
+		// コンパイルでき、前の版から変わっている案を覚えておく（食い違いが残ったとき、人に見せる）
+		last = &candidate{code: code, results: results, syscalls: syscalls, attempt: attempt}
+		if data, err := os.ReadFile(bin); err == nil {
+			os.WriteFile(bin+".candidate", data, 0o755)
+		}
 		if failed > 0 {
 			var b strings.Builder
 			for _, r := range results {
@@ -246,15 +275,24 @@ func grow(args []string) int {
 				}
 			}
 			fmt.Print(indent(b.String()))
-			prompt = retryPrompt(name, spec, answer, "Some tests failed:\n"+b.String())
+			prompt = retryPrompt(name, spec, answer, "Some tests failed:\n"+b.String()+
+				"Either the program or the test is wrong. Check each one against what the program should do. "+
+				"If your own test was wrong, fix the test and keep the program.")
 			continue
 		}
 		ok = true
 	}
 	attempt--
+	bin := filepath.Join(workDir, name)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "grow: gave up after %d attempts\n", maxAttempts)
-		return 1
+		if last == nil {
+			fmt.Fprintf(os.Stderr, "grow: gave up after %d attempts\n", maxAttempts)
+			return 1
+		}
+		// テストと食い違ったままの案が残った。テストの方が間違っていることもある（周 27、周 29）ので、最後は人が決める
+		fmt.Printf("\nthe program and some tests still disagree after %d attempts; you decide (marked with x below)\n", maxAttempts)
+		code, results, syscalls, attempt = last.code, last.results, last.syscalls, last.attempt
+		bin += ".candidate"
 	}
 
 	// 人に見せて承認をもらう
@@ -268,9 +306,18 @@ func grow(args []string) int {
 	fmt.Printf("--- allowed system calls (enforced with seccomp): %s\n", strings.Join(syscalls, " "))
 	fmt.Println("--- tests:")
 	for _, r := range results {
-		fmt.Printf("    %s => %s  ok%s\n", argsString(r.tc.args), r.tc.expected, testLabel(r))
+		if r.passed {
+			fmt.Printf("    %s => %s  ok%s\n", argsString(r.tc.args), r.tc.expected, testLabel(r))
+		} else {
+			fmt.Printf("  x %s => %s  but the program printed %s%s\n", argsString(r.tc.args), r.tc.expected, r.got, testLabel(r))
+		}
 	}
-	if !*yes && !confirm(fmt.Sprintf("install to %s/%s? [y/N] ", installDir, name)) {
+	question := fmt.Sprintf("install to %s/%s? [y/N] ", installDir, name)
+	if !ok {
+		question = fmt.Sprintf("install to %s/%s anyway (if you think the tests marked x are wrong)? [y/N] ", installDir, name)
+	}
+	// -y でも、テストと食い違ったものは入れない（安全側に倒す）
+	if (!*yes || !ok) && !confirm(question) {
 		fmt.Println("not installed")
 		return 1
 	}
@@ -278,7 +325,7 @@ func grow(args []string) int {
 	if cur != nil {
 		version, history = cur.version+1, append(cur.history, request)
 	}
-	if err := install(name, request, model, code, filepath.Join(workDir, name), attempt, syscalls, results, version, history); err != nil {
+	if err := install(name, request, model, code, bin, attempt, syscalls, results, version, history); err != nil {
 		fmt.Fprintln(os.Stderr, "grow:", err)
 		return 1
 	}
@@ -302,13 +349,36 @@ func nameTaken(name string) string {
 	return ""
 }
 
-func findModel() (string, error) {
-	matches, _ := filepath.Glob(filepath.Join(modelsDir, "*.gguf"))
-	if len(matches) == 0 {
+// /models のモデルから選ぶ。want があればファイル名にそれを含むもの、無ければ一番大きいもの（一番賢いはず）。
+// 分けて置いたモデル（-00001-of-00002.gguf など）は 1 つ目を指し、合計の大きさで比べる
+func findModel(want string) (string, error) {
+	files, _ := filepath.Glob(filepath.Join(modelsDir, "*.gguf"))
+	sizes := map[string]int64{}
+	for _, f := range files {
+		base := f
+		if m := splitRe.FindStringSubmatch(f); m != nil { // 2 つ目以降は 1 つ目に足す
+			base = m[1] + "-00001-of-" + m[2] + ".gguf"
+		}
+		if st, err := os.Stat(f); err == nil {
+			sizes[base] += st.Size()
+		}
+	}
+	best, bestSize := "", int64(-1)
+	for f, size := range sizes {
+		if want != "" && !strings.Contains(filepath.Base(f), want) {
+			continue
+		}
+		if size > bestSize {
+			best, bestSize = f, size
+		}
+	}
+	if best == "" {
+		if want != "" {
+			return "", fmt.Errorf("no model matching %q in %s", want, modelsDir)
+		}
 		return "", fmt.Errorf("no model in %s (attach models.img)", modelsDir)
 	}
-	sort.Strings(matches)
-	return matches[0], nil
+	return best, nil
 }
 
 // 書き直しのたびに温度を上げる。温度 0 のままだと、同じ間違いを繰り返しやすい（周 24 で atol を 3 回続けた）
@@ -320,11 +390,17 @@ func generate(model, prompt, temp string, seed int) (string, error) {
 }
 
 func generateWith(model, system, prompt, temp string, seed, maxTokens int) (string, error) {
-	sys := filepath.Join(workDir, "system.txt")
+	// システムプロンプトごと・モデルごとに、先頭部分の計算結果をキャッシュして使い回す（7B では毎回 15〜20 秒かかっていた）
+	key := sha256Hex([]byte(model + "\x00" + system))[:16]
+	sys := filepath.Join(workDir, "system-"+key+".txt")
 	if err := os.WriteFile(sys, []byte(system), 0o644); err != nil {
 		return "", err
 	}
-	cmd := exec.Command(llamaBin, "-m", model, "-sysf", sys, "-p", prompt,
+	cache := filepath.Join(workDir, "cache-"+key+".bin")
+	cmd := exec.Command(llamaBin, "-m", model, "-sysf", sys, "-p", prompt, "--prompt-cache", cache,
+		// 文脈は 4096 トークンで足りる。既定（モデルの最大、Qwen2.5 は 32768）だと 7B では作業領域だけで数 GB になり、
+		// メモリが足りずに止められた（周 29）。モデルはファイルの写像（mmap）で読み、2 回目からはページキャッシュに載ったものを使う
+		"-c", "4096", "-lm", "mmap",
 		"-st", "--simple-io", "--temp", temp, "--seed", fmt.Sprint(seed), "-n", fmt.Sprint(maxTokens),
 		"-t", fmt.Sprint(runtime.NumCPU()), "--no-display-prompt")
 	var out bytes.Buffer
@@ -422,14 +498,14 @@ func testLabel(r testResult) string {
 	return ""
 }
 
-func generateIndependentTests(model, name, request string) ([]testCase, error) {
+func generateIndependentTests(model, request string) ([]testCase, error) {
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
-		answer, err := generateWith(model, testerPrompt, fmt.Sprintf("The program is named %s. It should: %s", name, request), "0.3", 100+attempt, 300)
+		answer, err := generateWith(model, testerPrompt, request, "0.3", 100+attempt, 300)
 		if err != nil {
 			return nil, err
 		}
-		os.WriteFile(filepath.Join(workDir, fmt.Sprintf("%s.tests%d.txt", name, attempt)), []byte(answer), 0o644)
+		os.WriteFile(filepath.Join(workDir, fmt.Sprintf("tests%d.txt", attempt)), []byte(request+"\n\n=== answer ===\n"+answer), 0o644)
 		t := testsRe.FindStringSubmatch(answer)
 		if t == nil {
 			lastErr = fmt.Errorf("the tester wrote no ```tests block")
@@ -513,7 +589,7 @@ func install(name, request, model, code, bin string, attempts int, syscalls []st
 	if err != nil {
 		return err
 	}
-	modelHash, err := fileSHA256(model)
+	modelHash, err := modelSHA256(model)
 	if err != nil {
 		return err
 	}
@@ -540,6 +616,9 @@ func install(name, request, model, code, bin string, attempts int, syscalls []st
 		key := "test"
 		if r.independent {
 			key = "independent-test"
+		}
+		if !r.passed { // テストと食い違ったまま、人が承認した
+			key = "disagreed-" + key
 		}
 		fmt.Fprintf(&rec, "%s %s => %s\n", key, argsString(r.tc.args), r.tc.expected)
 	}
@@ -739,6 +818,43 @@ func writeFileSync(path string, data []byte, mode os.FileMode) error {
 		os.Remove(tmp)
 	}
 	return err
+}
+
+// モデルのハッシュ。分けて置いたモデルは全部のファイルを順に通す。7B は 4.7GB あり毎回読むと遅いので、
+// ファイルの名前・大きさ・更新時刻が同じなら /tmp/grow にキャッシュした値を使う
+func modelSHA256(model string) (string, error) {
+	parts := []string{model}
+	if m := splitRe.FindStringSubmatch(model); m != nil {
+		parts, _ = filepath.Glob(m[1] + "-*-of-" + m[2] + ".gguf")
+		sort.Strings(parts)
+	}
+	var key strings.Builder
+	for _, p := range parts {
+		st, err := os.Stat(p)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&key, "%s %d %d\n", p, st.Size(), st.ModTime().UnixNano())
+	}
+	cache := filepath.Join(workDir, "model-sha256-"+sha256Hex([]byte(key.String()))[:16])
+	if b, err := os.ReadFile(cache); err == nil {
+		return string(b), nil
+	}
+	h := sha256.New()
+	for _, p := range parts {
+		f, err := os.Open(p)
+		if err != nil {
+			return "", err
+		}
+		_, err = io.Copy(h, f)
+		f.Close()
+		if err != nil {
+			return "", err
+		}
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	os.WriteFile(cache, []byte(sum), 0o644)
+	return sum, nil
 }
 
 func fileSHA256(path string) (string, error) {

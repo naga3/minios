@@ -43,3 +43,13 @@ download third_party/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
 download third_party/models/LICENSE-Qwen2.5-Coder-1.5B-Instruct \
     https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/f86cb2c1fa58255f8052cc32aeede1b7482d4361/LICENSE \
     832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e
+
+# モデル: Qwen2.5-Coder-7B-Instruct（Apache-2.0）の 4bit 量子化（4.7GB）。grow の質を上げる。
+# 2 つに分けた版を使う（どちらも 4GB 未満なので、FAT32 の USB メモリにも置ける。llama.cpp は 1 つ目を指定すれば残りも読む）
+Q7=https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/13fb94bfda8c8cf22497dc57b78f391a9acb426a
+download third_party/models/qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf \
+    $Q7/qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf \
+    89f120544682078148c5a86117de9af3a65c339111262f2d3ff01d80d48b14be
+download third_party/models/qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf \
+    $Q7/qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf \
+    0183b3c850cfa96c31082c3af0123115300d3f62798c4448fa8f57bd0eac05e0

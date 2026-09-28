@@ -171,6 +171,19 @@ static void print_u(unsigned long v) {
     print(b + i);
 }
 
+// 文字列を数に（libc と同じ名前と振る舞い: 先頭の空白を飛ばし、符号を読み、数字が続く限り読む）。
+// grow の AI が毎回 atol を使おうとし、自分で書くと負の数でつまずいた（周 24、周 29）。AI が期待する形に API を合わせた
+static long atol(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    int neg = *s == '-';
+    if (*s == '-' || *s == '+') s++;
+    long v = 0;
+    while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+    return neg ? -v : v;
+}
+
+static int atoi(const char *s) { return atol(s); }
+
 // 符号付きの数。grow の AI が符号なしの print_u で負の数を出して、独立したテストに落ちた（周 27）
 static void print_i(long v) {
     if (v < 0) {

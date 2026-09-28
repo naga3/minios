@@ -14,7 +14,8 @@ AI が 1 周ずつ育てた記録は [JOURNAL.md](JOURNAL.md) にある。
 ./run.sh            # QEMU で起動（シリアル）。Ctrl+C はゲストに届く。QEMU を強制終了するには Ctrl+A → X
 ./run-efi.sh        # UEFI 版を実機と同じ経路（UEFI → FAT 上の BOOTX64.EFI）で起動
 ./run-efi.sh gui    # 画面のウィンドウも開き、USB キーボードで操作する（WSL なら WSLg）
-./test.py           # 自動テスト（31 個）。ローカル LLM のテストは ./fetch-third-party.sh と ./build-models.sh の後。UEFI 版のテストは ./build-efi.sh の後だけ動く
+./test.py           # 自動テスト（32 個）。ローカル LLM のテストは ./fetch-third-party.sh と ./build-models.sh の後
+MINIOS_SLOW=1 ./test.py grow_7b        # 7B のモデルで作って育てる（数分）。UEFI 版のテストは ./build-efi.sh の後だけ動く
 MINIOS_INTERNET=1 ./test.py internet   # インターネットに出るテスト（DNS、HTTPS）
 ```
 
@@ -28,6 +29,7 @@ minios# fetch https://example.com/
 minios# echo hello > /data/note      # /data は再起動しても残る
 minios# grow sum print the sum of the integer arguments   # OS の中の AI がプログラムを書いて入れる
 minios# grow sum print the result followed by a newline  # もうあれば育てる（-log で履歴、-undo で戻す）
+minios# grow -model 1.5b ...                               # 速い小さなモデルで（既定は一番大きい 7B）
 minios# shutdown
 ```
 
