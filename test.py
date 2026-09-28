@@ -1260,6 +1260,72 @@ def tiny_snake():
         vm.kill()
 
 
+@test
+def tiny_jump():
+    """tiny: 横から見たステージを、ロボットが歩いて跳ぶ（キーの押しっぱなし、スプライト、重力、マスとの当たり）。
+    QEMU の sendkey は 1 つずつ順に押して離すので、2 つを同時に押すときは right-z のように 1 回で送る"""
+    out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    vm = TinyVM()
+    SKY, ORANGE, DIRT = 16 + 2 * 36 + 4 * 6 + 5, 16 + 5 * 36 + 3 * 6, 16 + 4 * 36 + 2 * 6 + 1
+    QBLOCK = 122 * 320 + 81                               # ? の箱（5 列 7 行のマス）の左上あたりの 1 点
+
+    def robot():
+        """ロボットの目（明るい水色）の左端の点。立っているときの y は 156"""
+        i = vm.pixels().index(0xb)
+        return i % 320, i // 320
+
+    def wait(cond, what, timeout=5):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cond():
+                return
+            time.sleep(0.04)
+        raise Timeout(f"{what}: robot {robot()}")
+
+    def highest(key, hold):
+        """跳んで、一番高いところの y"""
+        vm.monitor(f"sendkey {key} {hold}")
+        top, t0 = 999, time.monotonic()
+        while time.monotonic() - t0 < 1.2:
+            top = min(top, robot()[1])
+            time.sleep(0.03)
+        return top
+
+    try:
+        vm.wait_screen(">")
+        vm.type_keys("jump\n")
+        wait(lambda: vm.screen(bg=0).startswith("JUMP  arrows  Z/space:jump  Esc:quit"), "title")
+        px = vm.pixels()
+        assert px.count(SKY) > 30000 and px[QBLOCK] == ORANGE, "sky and ? block"
+        assert robot() == (39, 156), robot()                     # 左の地面に立っている
+        long_jump, short_jump = highest("z", 400), highest("spc", 60)  # 長く押すと高く跳ぶ（上にマスの無い所で）
+        assert long_jump < 156 - 55 and 156 - 45 < short_jump < 156 - 15, (long_jump, short_jump)
+        assert robot()[1] == 156, "lands"
+        vm.monitor("sendkey right 300")                            # 押している間だけ歩く
+        wait(lambda: robot()[0] > 50, "walks right")
+        time.sleep(0.6)                                          # 離して止まるまで
+        x = robot()[0]
+        time.sleep(0.4)
+        assert robot()[0] == x, "stops after release"
+        for _ in range(40):                                       # ? の箱の下まで歩いて、下から叩く
+            if 79 <= robot()[0] < 95:
+                break
+            vm.monitor("sendkey right 100")
+            time.sleep(0.4)
+        vm.monitor("sendkey up 400")
+        wait(lambda: vm.pixels()[QBLOCK] == DIRT, "? block becomes used")
+        vm.monitor("sendkey right-z 500")                         # 段を跳び越えて、穴に落ちる
+        vm.monitor("sendkey right 1500")
+        wait(lambda: "MISS" in vm.screen(bg=4), "falls into the hole")
+        wait(lambda: vm.pixels()[QBLOCK] == ORANGE, "starts over")
+        vm.monitor("sendkey esc")
+        s = vm.wait_screen(">")
+        assert "JUMP" not in s, s
+    finally:
+        vm.kill()
+
+
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     failed = 0

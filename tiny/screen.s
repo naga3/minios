@@ -9,7 +9,7 @@
     .set VRAM, 0xa0000
 
     .text
-    .global screen_init, present, put_pixel, fill_rect, clear, backbuf
+    .global screen_init, present, wait_vsync, put_pixel, fill_rect, clear, backbuf
 
 # screen_init: VGA をモード 13h（320 × 200・256 色）に切り替え、パレットを用意する。
 # 64 ビットでは BIOS を呼べないので、VGA のレジスタに直接書く
@@ -141,6 +141,23 @@ present:
     pop %rdi
     pop %rsi
     pop %rcx
+    ret
+
+# wait_vsync: VGA が画面を描き終えて、次を描き始めるまでの隙間（垂直帰線）を待つ。
+# この間に present すれば、描いている途中の画面が混ざらない（ちらつかない）。
+# ポート 0x3DA のビット 3 が帰線中。QEMU は読むたびに切り替えるだけなので、待たずにすぐ返る
+wait_vsync:
+    push %rax
+    push %rdx
+    mov $0x3da, %dx
+1:  in %dx, %al                         # 今の帰線が終わるのを待ち
+    test $8, %al
+    jnz 1b
+2:  in %dx, %al                         # 次の帰線が始まるのを待つ
+    test $8, %al
+    jz 2b
+    pop %rdx
+    pop %rax
     ret
 
 # put_pixel: (rdi, rsi) に r8b の色の点を打つ（画面の外なら何もしない）

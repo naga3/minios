@@ -1,6 +1,8 @@
 # キーボード（PS/2）。キーボードの割り込みで番号（スキャンコード）を受け取って文字に変え、貯めておく。英語配列
 #
 # 貯めるのは文字と、特別なキーの番号: 矢印キーは KEY_UP・KEY_DOWN・KEY_LEFT・KEY_RIGHT（0x80〜0x83）、Esc は 27
+# それとは別に、キーごとに今押しているか（1）・いないか（0）を keys の表に持つ（ゲームで「押しっぱなし」を見るため）。
+# 表の番号はスキャンコード。0xE0 で始まるキー（矢印など）は 0x80 を足す: 上 0xC8、左 0xCB、右 0xCD、下 0xD0
 # 関数の約束: 返す文字は al。使ったレジスタは戻す（rax を除く）
     .code64
     .set KEY_UP,    0x80
@@ -8,7 +10,7 @@
     .set KEY_LEFT,  0x82
     .set KEY_RIGHT, 0x83
     .text
-    .global getc, getc_nowait, kbd_scancode
+    .global getc, getc_nowait, kbd_scancode, keys
 
 # getc: キーが来るまで待って al に返す。待つ間は hlt で CPU を休める
 getc:
@@ -36,7 +38,16 @@ getc_nowait:
 # kbd_scancode: キーボードの割り込みから呼ばれる。al = スキャンコード（セット 1）
 kbd_scancode:
     push %rbx
+    cmp $0xe0, %al                      # 押している状態の表を書き換える（前置きそのものは除く）
+    je 11f
+    movzbl %al, %ebx
+    and $0x7f, %ebx
     cmpb $0, extended
+    je 10f
+    or $0x80, %ebx
+10: test $0x80, %al                     # 上位ビットが立っていれば離した
+    setz keys(%rbx)
+11: cmpb $0, extended
     jne 5f
     cmp $0xe0, %al                      # 次の番号は矢印キーなど（前置き）
     je 6f
@@ -122,5 +133,6 @@ head:     .byte 0                       # 貯める場所（割り込みが書�
 tail:     .byte 0                       # 取り出す場所
     .section .bss
 buffer:   .skip 256                     # 貯めておく輪（head と tail は 1 バイトなので、256 で自然に一周する）
+keys:     .skip 256                     # キーごとに、今押しているか
 
     .section .note.GNU-stack, "", @progbits

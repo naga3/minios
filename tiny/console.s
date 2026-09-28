@@ -7,7 +7,7 @@
     .set W, 320
 
     .text
-    .global con_putc, con_puts, con_clear, con_color, con_goto, con_cursor, con_print_u
+    .global con_putc, con_puts, con_write, con_clear, con_color, con_goto, con_cursor, con_print_u
 
 # con_color: 文字の色（al）と背景の色（ah）を決める
 con_color:
@@ -67,6 +67,11 @@ con_clear:
 
 # con_puts: rsi の文字列（0 で終わる）を書き、最後に画面へ写す
 con_puts:
+    call con_write
+    jmp present
+
+# con_write: rsi の文字列を書く。画面へは写さない（ゲームが 1 コマを描き終えてから、まとめて写すとき）
+con_write:
     push %rax
     push %rsi
 1:  lodsb
@@ -74,8 +79,7 @@ con_puts:
     jz 2f
     call putc_nopresent
     jmp 1b
-2:  call present
-    pop %rsi
+2:  pop %rsi
     pop %rax
     ret
 
@@ -195,6 +199,8 @@ cursor_on:
     jmp 1f
 2:  ret
 cursor_off:
+    cmpb $0, cursor_visible             # 隠しているときは、線も無いので消さない（消すと背景の色の線が残る）
+    je 2b
     push %r8
     movzbl bg, %r8d
 1:  push %rdi

@@ -10,6 +10,7 @@ main:
     cld                                 # 文字列の命令（lodsb など）が前へ進むように
     call screen_init
     call irq_init                       # 割り込み（タイマーとキーボード）
+    call sprite_init                    # スプライトの文字 → 色 の表
     mov $0x0107, %ax                    # 背景は青（1）、文字は明るい灰色（7）
     call con_color
     call con_clear
@@ -31,6 +32,9 @@ main:
     mov $cmd_snake, %rdi
     call streq
     jnz 2f
+    mov $cmd_jump, %rdi
+    call streq
+    jnz 5f
     mov $cmd_clear, %rdi
     call streq
     jnz 3f
@@ -50,6 +54,8 @@ main:
     jmp 1b
 4:  mov $help_text, %rsi
     call con_puts
+    jmp 1b
+5:  call jump_main
     jmp 1b
 
 # streq: rsi と rdi の文字列が同じなら ZF = 0（jnz で飛べる）
@@ -130,9 +136,10 @@ read_line:
 title:    .asciz "minios tiny  320x200 256 colors\n"
 subtitle: .asciz "\nThe quick brown fox jumps over\nthe lazy dog. 0123456789 !?@#$%&*\n\nType help for commands.\n"
 cmd_snake: .asciz "snake"
+cmd_jump:  .asciz "jump"
 cmd_clear: .asciz "clear"
 cmd_help:  .asciz "help"
-help_text: .asciz "snake  play the snake game\nclear  clear the screen\nother  echo the line\n"
+help_text: .asciz "snake  play the snake game\njump   run and jump\nclear  clear the screen\nother  echo the line\n"
 prompt:   .asciz "> "
 newline:  .asciz "\n"
 erase:    .asciz "\b \b"
