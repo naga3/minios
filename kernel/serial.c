@@ -10,6 +10,24 @@ void serial_init(void) {
     outb(COM1 + 1, 0x00);
     outb(COM1 + 3, 0x03);  // 8 ビット、パリティなし、ストップビット 1
     outb(COM1 + 2, 0xC7);  // FIFO
+    outb(COM1 + 4, 0x0B);  // 割り込みを PIC に届ける（OUT2）
+    outb(COM1 + 1, 0x01);  // 受信したら割り込む
+}
+
+// 受信した文字の輪（割り込みで入れ、serial_getc で取り出す）
+static char rx[256];
+static volatile unsigned rx_head, rx_tail;
+
+void serial_irq(void) {
+    while (inb(COM1 + 5) & 1) {
+        char c = inb(COM1);
+        if (rx_head - rx_tail < sizeof rx) rx[rx_head++ % sizeof rx] = c;
+    }
+}
+
+int serial_getc(void) {
+    if (rx_tail == rx_head) return -1;
+    return (unsigned char)rx[rx_tail++ % sizeof rx];
 }
 
 void serial_putc(char c) {
@@ -22,4 +40,19 @@ void kprint(const char *s) {
         if (*s == '\n') serial_putc('\r');
         serial_putc(*s);
     }
+}
+
+void kprint_u(u64 v) {
+    char b[21];
+    int i = sizeof b;
+    b[--i] = 0;
+    do b[--i] = '0' + v % 10; while (v /= 10);
+    kprint(b + i);
+}
+
+void kprint_hex(u64 v) {
+    char b[19];
+    b[0] = '0', b[1] = 'x', b[18] = 0;
+    for (int i = 17; i >= 2; i--, v >>= 4) b[i] = "0123456789abcdef"[v & 15];
+    kprint(b);
 }

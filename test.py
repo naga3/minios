@@ -1026,16 +1026,33 @@ def boot_script():
 
 @test
 def scratch_boot():
-    """自作カーネルが 64 ビットで起動し、シリアルに出力して、QEMU を終わらせる"""
+    """自作カーネルが 64 ビットで起動し、割り込み（タイマー、シリアルの受信）と例外を扱える"""
     out = subprocess.run([f"{ROOT}/kernel/build.sh"], capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     vm = ScratchVM()
     try:
         vm.expect(r"minios scratch kernel")
-        vm.expect(r"hello from 64-bit long mode")
+        vm.expect(r"memory: 255 MiB")
+        vm.expect(r"interrupts on")
+        vm.expect(r"type keys \(q to quit\)")
+        vm.send("hello")                      # シリアルの受信割り込みで受け取り、そのまま返す
+        vm.expect(r"hello")
+        time.sleep(1.1)
+        vm.send("q")
+        out = vm.expect(r"bye")
+        assert re.search(r"uptime (\d+)\.\ds", out) and int(re.search(r"uptime (\d+)", out).group(1)) >= 1, out  # タイマー割り込み
         assert vm.wait_exit() == 1  # カーネルが 0 を書いた
     finally:
         vm.kill()
+    # 例外を起こして、原因と場所を出して止まることを確かめる
+    for option, expected in (("test=ud2", r"\*\*\* exception: invalid opcode \(vector 6, "),
+                             ("test=pagefault", r"\*\*\* exception: page fault \(vector 14, .*, address 0x0000008000000000\)")):
+        vm = ScratchVM(extra=("-append", option))
+        try:
+            vm.expect(expected)
+            assert vm.wait_exit() == 7  # カーネルが 3 を書いた
+        finally:
+            vm.kill()
 
 
 def main():
