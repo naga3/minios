@@ -3,11 +3,11 @@
 # build/models.img（./build-models.sh で作る）があれば、モデルのディスクをつなぎ、ローカル LLM（grow）が動くメモリと CPU にする
 set -e
 cd "$(dirname "$0")"
-# ./run.sh tiny: アセンブリだけの自作カーネル（tiny/、Forth）で起動する。bye で終わる
+# ./run.sh tiny: アセンブリだけの自作カーネル（tiny/。320 × 200・256 色の画面と PS/2 キーボード）で起動する。
+# 画面はウィンドウに出る（WSL なら WSLg）。ウィンドウを閉じると終わる
 if [ "$1" = tiny ]; then
     tiny/build.sh
-    exec qemu-system-x86_64 -kernel build/tiny/kernel.elf -display none -serial mon:stdio \
-        -device isa-debug-exit,iobase=0xf4,iosize=0x04 -no-reboot
+    exec qemu-system-x86_64 -kernel build/tiny/kernel.elf -display gtk -serial none
 fi
 # ./run.sh scratch: Linux の代わりに自作カーネル（kernel/）で起動する
 if [ "$1" = scratch ]; then

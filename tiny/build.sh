@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 OUT=../build/tiny
 mkdir -p $OUT
 objs=""
-for src in boot.s serial.s forth.s; do
+for src in boot.s screen.s font.s console.s kbd.s main.s; do
     as --64 -o $OUT/${src%.s}.o $src
     objs="$objs $OUT/${src%.s}.o"
 done

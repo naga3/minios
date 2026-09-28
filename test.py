@@ -1131,53 +1131,84 @@ def scratch_files_match_linux():
     assert linux == scratch, (linux, scratch)
 
 
+def tiny_font():
+    """tiny/font.s の 8 × 8 のフォント（0x20〜0x7e）を読み、点の並び → 文字 の表を作る"""
+    rows = [int(m, 2) for m in re.findall(r"\.byte 0b([01]{8})", open(f"{ROOT}/tiny/font.s").read())]
+    return {tuple(rows[i * 8:(i + 1) * 8]): chr(0x20 + i) for i in range(95)}
+
+
 class TinyVM(VM):
-    """tiny（アセンブリだけの Forth）で起動する VM"""
+    """tiny（アセンブリだけ。320 × 200・256 色の画面と PS/2 キーボード）で起動する VM。
+    キーは QEMU のモニタから送り、画面はメモリ（0xA0000）から読んで、自作のフォントと照らし合わせて文字に戻す"""
+    FONT = None
+
     def __init__(self):
         import tempfile
         self.mon_dir = tempfile.TemporaryDirectory()
         self.mon_path = os.path.join(self.mon_dir.name, "mon.sock")
         self.buf = self.log = b""
         self.p = subprocess.Popen(
-            ["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/tiny/kernel.elf", "-display", "none", "-serial", "stdio",
-             "-monitor", f"unix:{self.mon_path},server,nowait", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-no-reboot"],
+            ["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/tiny/kernel.elf", "-display", "none", "-serial", "none",
+             "-monitor", f"unix:{self.mon_path},server,nowait"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        if TinyVM.FONT is None:
+            TinyVM.FONT = tiny_font()
 
-    def line(self, text):
-        """1 行打って、その行の出力（打った行のエコーと、最後の " ok" を除く）を返す"""
-        self.send(text + "\n")
-        out = self.expect(r" ok\r\n\Z").replace("\r\n", "\n")
-        return out.split("\n", 1)[1][:-len(" ok\n")]
+    def pixels(self):
+        """画面の 320 × 200 の点（色の番号）"""
+        path = os.path.join(self.mon_dir.name, "vram.bin")
+        self.monitor(f'pmemsave 0xa0000 64000 "{path}"')  # 引用符が要る（無いと / を割り算として読む）
+        for _ in range(50):
+            if os.path.exists(path) and os.path.getsize(path) == 64000:
+                break
+            time.sleep(0.05)
+        data = open(path, "rb").read()
+        os.unlink(path)
+        return data
+
+    def screen(self, bg=1):
+        """画面の文字（40 × 25）。背景の色でない点を文字の点とみなす。読めない升目は □。行末の空白は落とす"""
+        px = self.pixels()
+        lines = []
+        for r in range(25):
+            line = ""
+            for c in range(40):
+                cell = tuple(sum(0x80 >> x for x in range(8) if px[(r * 8 + y) * 320 + c * 8 + x] != bg) for y in range(8))
+                line += self.FONT.get(cell, self.FONT.get(cell[:7] + (0,), "□"))  # 下の行はカーソルかもしれない
+            lines.append(line.rstrip())
+        return "\n".join(lines).rstrip()
+
+    def wait_screen(self, text, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            s = self.screen()
+            if s.endswith(text):
+                return s
+            time.sleep(0.1)
+        raise Timeout(f"screen does not end with {text!r}: {self.screen()!r}")
 
 
 @test
-def tiny_forth():
-    """tiny の Forth: 計算、スタック、言葉の定義、エラー、基数、bye"""
+def tiny_graphics():
+    """tiny: 320 × 200・256 色の画面に、自作のフォントで文字を描く。キーボード（PS/2）から 1 行読んで返す"""
     out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     vm = TinyVM()
     try:
-        vm.expect(r"minios tiny forth\r\n")
-        assert vm.line("2 3 + .") == "5 "
-        assert vm.line("10 3 /mod . .") == "3 1 "            # 商 余り の順に積まれる
-        assert vm.line("1 2 3 .s") == "<3> 1 2 3 "
-        assert vm.line("drop drop drop depth .") == "0 "
-        assert vm.line(": sq dup * ;") == ""                 # 新しい言葉
-        assert vm.line("7 sq .") == "49 "
-        assert vm.line(": cube dup sq * ;") == ""            # 自分で定義した言葉を使って定義する
-        assert vm.line("3 cube .") == "27 "
-        assert vm.line("3 SQ .") == "9 "                     # 大文字と小文字は区別しない
-        assert vm.line("65 emit 66 emit cr") == "AB\n"
-        assert vm.line("-42 . 1 2 < . 2 1 < .") == "-42 -1 0 "
-        assert vm.line("5 0 /mod") == "division by zero\n"
-        assert vm.line("hello 1 2 3") == "? hello\n"         # 知らない言葉: 行の残りは捨てる
-        assert vm.line("depth .") == "0 "
-        assert vm.line("drop") == "stack underflow\n"
-        assert vm.line("16 base ! ff . 10 base !") == "ff "  # 基数（10 も 16 進として読まれる。Forth の落とし穴）
-        assert vm.line("a base ! 255 . \\ ここはコメント") == "255 "
-        assert "cube sq" in vm.line("words")                  # 新しい言葉が先頭に並ぶ
-        vm.send("bye\n")
-        assert vm.wait_exit() == 1                            # QEMU の終了装置
+        s = vm.wait_screen(">")
+        assert s.startswith("minios tiny  320x200 256 colors\n"), s          # タイトル
+        assert "The quick brown fox jumps over\nthe lazy dog. 0123456789 !?@#$%&*" in s, s  # フォントの見本
+        px = vm.pixels()
+        assert [px[10 * 320 + i * 20 + 10] for i in range(16)] == list(range(16))  # 2 行目: 16 色の帯
+        vm.type_keys("hello world\n")
+        vm.wait_screen("> hello world\nhello world\n>")
+        for k in ("shift-a", "b", "c", "backspace", "d", "shift-1", "ret"):  # Shift と、バックスペースで c を消す
+            vm.monitor("sendkey " + k)
+        vm.wait_screen("> Abd!\nAbd!\n>")
+        for i in range(12):                                   # 25 行を超えて打つと、上にずれる
+            vm.type_keys(f"line{i}\n")
+        s = vm.wait_screen("> line11\nline11\n>")
+        assert "minios tiny" not in s and len(s.split("\n")) == 25, s
     finally:
         vm.kill()
 
