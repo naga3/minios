@@ -143,13 +143,17 @@ class VM:
 
 
 class ScratchVM(VM):
-    """自作カーネル（kernel/）で起動する VM。QEMU のデバッグ用の終了装置で終わる（終了コードは (code << 1) | 1）"""
-    def __init__(self, extra=()):
+    """自作カーネル（kernel/）で起動する VM。QEMU のデバッグ用の終了装置で終わる（終了コードは (code << 1) | 1）。
+    initramfs は Linux 版と同じ build/initramfs.cpio を Multiboot のモジュールとして渡す"""
+    def __init__(self, append="", extra=()):
+        if append:
+            extra = ("-append", append, *extra)
         import tempfile
         self.mon_dir = tempfile.TemporaryDirectory()
         self.mon_path = os.path.join(self.mon_dir.name, "mon.sock")
         self.p = subprocess.Popen(
             ["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/scratch/kernel.elf", "-m", "256M",
+             "-initrd", f"{ROOT}/build/initramfs.cpio",
              "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-no-reboot",
              "-display", "none", "-serial", "stdio", "-monitor", f"unix:{self.mon_path},server,nowait", *extra],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
@@ -1047,12 +1051,36 @@ def scratch_boot():
     # 例外を起こして、原因と場所を出して止まることを確かめる
     for option, expected in (("test=ud2", r"\*\*\* exception: invalid opcode \(vector 6, "),
                              ("test=pagefault", r"\*\*\* exception: page fault \(vector 14, .*, address 0x0000008000000000\)")):
-        vm = ScratchVM(extra=("-append", option))
+        vm = ScratchVM(append=option)
         try:
             vm.expect(expected)
             assert vm.wait_exit() == 7  # カーネルが 3 を書いた
         finally:
             vm.kill()
+
+
+@test
+def scratch_runs_linux_binary():
+    """Linux 用にビルドした minios のプログラムが、変えずに自作カーネルで動く（ELF、ユーザーモード、Linux と同じシステムコール）"""
+    subprocess.run([f"{ROOT}/kernel/build.sh"], check=True, capture_output=True)
+    vm = ScratchVM(append="run=/bin/hello a b c")
+    try:
+        vm.expect(r"exec /bin/hello")
+        vm.expect(r"hello from pid 1 \(parent 0\) a b c env=3")   # argv・envp・getpid・getppid・write
+        vm.expect(r"\[process 1 exited with 0\]")
+        assert vm.wait_exit() == 1
+    finally:
+        vm.kill()
+    vm = ScratchVM(append="run=/bin/false")
+    try:
+        vm.expect(r"\[process 1 exited with 1\]")               # exit_group の終了コード
+    finally:
+        vm.kill()
+    vm = ScratchVM(append="run=/bin/nosuch")
+    try:
+        vm.expect(r"exec failed: 2")                               # ENOENT
+    finally:
+        vm.kill()
 
 
 def main():

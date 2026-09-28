@@ -34,6 +34,36 @@ void kprint_hex(u64 v);
 void cpu_init(void);
 void cpu_set_kernel_stack(u64 top);
 
+// mm.c: 物理メモリ（4KB のページ）と、プロセスごとのページテーブル
+#define DIRECT_MAP 0xFFFF800000000000UL          // 物理メモリを写した高い番地
+#define P2V(p) ((void *)((u64)(p) + DIRECT_MAP))
+#define V2P(v) ((u64)(v) - DIRECT_MAP)
+#define PAGE 4096UL
+#define PTE_P 0x1UL
+#define PTE_W 0x2UL
+#define PTE_U 0x4UL
+void mm_init(u64 free_start, u64 free_end);
+u64 page_alloc(void);                           // 0 で埋めた 4KB のページ（物理アドレス）。無ければ 0
+u64 mm_free_pages(void);
+u64 *pml4_new(void);                            // カーネルの部分だけを持つ、新しいプロセスのページテーブル（高い番地で返す）
+int map_page(u64 *pml4, u64 va, u64 pa, u64 flags);
+void *user_ptr(u64 *pml4, u64 va);              // プロセスの番地 va を、カーネルから触れる番地に（写されていなければ 0）
+void kmemset(void *d, int c, size_t n);
+void kmemcpy(void *d, const void *s, size_t n);
+
+// initrd.c: initramfs（cpio）
+void initrd_init(const void *data, u64 size);
+const void *initrd_find(const char *path, u64 *size, u32 *mode);
+
+// proc.c: プロセス
+extern u64 *current_pml4;
+extern long current_pid;
+long exec_initial(const char *path, char *const argv[], char *const envp[]);
+void process_exit(long code);
+
+// syscall.c
+void syscall_init(void);
+
 // irq.c
 void irq_init(void);
 extern volatile u64 ticks;  // タイマー（100Hz）の回数

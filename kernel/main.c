@@ -6,6 +6,12 @@ struct multiboot_info {
     u32 flags, mem_lower, mem_upper, boot_device, cmdline, mods_count, mods_addr;
 };
 
+struct multiboot_module {
+    u32 start, end, string, reserved;
+};
+
+extern char kernel_end[];
+
 static int str_eq(const char *a, const char *b) {
     while (*a && *a == *b) a++, b++;
     return *a == *b;
@@ -22,14 +28,45 @@ void kmain(unsigned int magic, unsigned int mbinfo) {
     while (*cmdline == ' ') cmdline++;
     kprint("memory: "); kprint_u((mb->mem_upper + 1024) / 1024); kprint(" MiB\n");
 
+    // 空いている物理メモリ: カーネルと initramfs（Multiboot のモジュール）の後ろから、メモリの終わりまで
+    u64 free_start = (u64)kernel_end;
+    if ((mb->flags & 8) && mb->mods_count > 0) {
+        struct multiboot_module *mod = (struct multiboot_module *)(u64)mb->mods_addr;
+        initrd_init(P2V(mod->start), mod->end - mod->start);
+        if (mod->end > free_start) free_start = mod->end;
+        kprint("initramfs: "); kprint_u((mod->end - mod->start) / 1024); kprint(" KiB\n");
+    }
+    mm_init(free_start, (u64)(mb->mem_upper + 1024) * 1024);
+
     cpu_init();
     irq_init();
+    syscall_init();
     __asm__ volatile("sti");
     kprint("interrupts on\n");
 
     // 起動オプションで例外を起こして、例外の処理を確かめる（テスト用）
     if (str_eq(cmdline, "test=ud2")) __asm__ volatile("ud2");
     if (str_eq(cmdline, "test=pagefault")) *(volatile u64 *)0x8000000000UL = 1;
+
+    // 起動オプション "run=パス 引数..." があれば、initramfs のそのプログラムを最初のプロセスとして動かす
+    if (cmdline[0] == 'r' && cmdline[1] == 'u' && cmdline[2] == 'n' && cmdline[3] == '=') {
+        static char buf[256];
+        static char *argv[16];
+        int argc = 0, n = 0;
+        for (const char *p = cmdline + 4; *p && n < 255; p++) buf[n++] = *p;
+        buf[n] = 0;
+        for (char *p = buf; *p && argc < 15;) {
+            argv[argc++] = p;
+            while (*p && *p != ' ') p++;
+            if (*p) *p++ = 0;
+        }
+        argv[argc] = 0;
+        static char *envp[] = {"HOME=/", "TERM=linux", "PATH=/bin", 0};
+        kprint("exec "); kprint(argv[0]); kprint("\n");
+        long e = exec_initial(argv[0], argv, envp);
+        kprint("exec failed: "); kprint_u(-e); kprint("\n");
+        qemu_exit(1);
+    }
 
     kprint("type keys (q to quit)\n");
     u64 last = 0;

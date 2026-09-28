@@ -8,6 +8,7 @@
 
     .section .bss
     .align 4096
+    .global pml4
 pml4:   .skip 4096                   // ページテーブル（4 段）。最初の 4GB をそのままの番地で使えるようにする（2MB のページ）
 pdpt:   .skip 4096
 pd:     .skip 4096 * 4
@@ -36,6 +37,7 @@ _start:
     mov $pdpt, %eax
     or $0x3, %eax                    // 存在する + 書き込める
     mov %eax, pml4
+    mov %eax, pml4 + 256 * 8         // 同じ 4GB を高い番地（0xFFFF800000000000〜）にも写す。カーネルは物理メモリをここから触る
     mov $0, %ecx
 1:  mov %ecx, %eax
     shl $12, %eax
