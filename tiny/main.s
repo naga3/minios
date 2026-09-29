@@ -42,6 +42,9 @@ main:
     mov $cmd_sound, %rdi
     call streq
     jnz 6f
+    mov $cmd_play, %rdi                 # play は後ろに MML を付ける（play t120 cdefg）
+    call prefix
+    jnz 7f
     mov $cmd_help, %rdi
     call streq
     jnz 4f
@@ -63,6 +66,9 @@ main:
     call jump_main
     jmp 1b
 6:  call sound_demo
+    jmp 1b
+7:  mov %rax, %rdi                      # C の play_command(MML)
+    call play_command
     jmp 1b
 
 # streq: rsi と rdi の文字列が同じなら ZF = 0（jnz で飛べる）
@@ -175,8 +181,9 @@ cmd_snake: .asciz "snake"
 cmd_jump:  .asciz "jump"
 cmd_clear: .asciz "clear"
 cmd_sound: .asciz "sound"
+cmd_play:  .asciz "play"
 cmd_help:  .asciz "help"
-help_text: .asciz "snake  play the snake game\njump   ROBO JUMP (jump 3-2: from 3-2)\nclear  clear the screen\nsound  play a tune (NES-style sound)\nother  echo the line\n"
+help_text: .asciz "snake  play the snake game\njump   ROBO JUMP (jump 3-2: from 3-2)\nclear  clear the screen\nsound  play a tune (NES-style sound)\nplay   play MML: play t120 o4 cdefg\nother  echo the line\n"
 prompt:   .asciz "> "
 newline:  .asciz "\n"
 erase:    .asciz "\b \b"

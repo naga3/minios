@@ -1,13 +1,12 @@
 // ファミコンの音源（2A03 の APU）をソフトで作る: 矩形波 2 音、三角波 1 音、ノイズ（DPCM はまだ無い）。
 // レジスタ（$4000〜$4017）の意味は本物と同じ。apu_write(0x4000, 値) のように書いて鳴らす。
 //
-// 本物の CPU のクロック（1,789,773 Hz）で数え、1 サンプル（22,050 Hz なので約 81 クロック）の間の値を平均して出す
-// （高い音でもざらつかないように）。数える単位は 1/256 クロック
+// 本物の CPU のクロック（1,789,773 Hz）で数え（単位は 1/256 クロック）、出力が変わった瞬間ごとに、
+// なめらかな段差をちょうどの時刻に置いて 48,000 Hz の波形にする（下の「波形を作る」）
+#include "sound.h"
+
 enum {
-    CLOCK = 1789773,
-#ifndef RATE
-    RATE = 48000,
-#endif
+    CLOCK = 1789773, RATE = SOUND_RATE,
     SAMPLE = (int)((256LL * CLOCK) / RATE),     // 1 サンプルの長さ（1/256 クロック）
     QUARTER = 7457 * 256,                       // フレームカウンタの 1/4（240 Hz）
 };
@@ -125,19 +124,6 @@ static void frame_step(void) {
     quarter_frame();
     if (s == 1 || s == (apu.five_step ? 4 : 3)) half_frame();
 }
-
-// 割り込みを止める・元に戻す（止める前の状態に戻すので、割り込みの中から呼んでもよい）
-#ifdef HOST                                     // PC の上で試すとき（tools/apurender.c）は割り込みが無い
-static unsigned long irq_off(void) { return 0; }
-static void irq_restore(unsigned long f) { (void)f; }
-#else
-static unsigned long irq_off(void) {
-    unsigned long f;
-    __asm__ volatile("pushfq; pop %0; cli" : "=r"(f) :: "memory");
-    return f;
-}
-static void irq_restore(unsigned long f) { __asm__ volatile("push %0; popfq" :: "r"(f) : "memory", "cc"); }
-#endif
 
 // レジスタに書く（割り込みの中で音を作っている途中に書き換えないように、割り込みを止めて書く）
 void apu_write(int addr, int v) {

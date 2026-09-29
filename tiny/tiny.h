@@ -30,7 +30,12 @@ enum { SC_W = 0x11, SC_A = 0x1e, SC_S = 0x1f, SC_D = 0x20, SC_Z = 0x2c, SC_X = 0
 // タイマー: ticks は起動してからの回数（1 回 = 10ms）
 extern volatile unsigned long ticks;
 void sleep_ticks(unsigned long n);
+#ifdef HOST                         // PC の上で試すとき（tools/）は、休む代わりに試しの道具の関数を呼ぶ
+void halt_hook(void);
+static inline void halt(void) { halt_hook(); }
+#else
 static inline void halt(void) { __asm__ volatile("hlt"); }   // 次の割り込みまで CPU を休める
+#endif
 
 // 256 色のパレット: 0〜15 は DOS の 16 色、16 + 赤 × 36 + 緑 × 6 + 青（それぞれ 0〜5）は色の立方体
 #define RGB6(r, g, b) (16 + (r) * 36 + (g) * 6 + (b))

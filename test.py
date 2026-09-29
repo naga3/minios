@@ -1324,10 +1324,57 @@ def tiny_apu():
     assert abs(autocorr(noise, 504)) < 0.2 and autocorr(short, 504) > 0.7, (autocorr(noise, 504), autocorr(short, 504))
 
 
+def sound_freq(s, rate):
+    """振れ幅の 1 割の余裕を持たせて、下から上へ横切る回数から周波数を出す"""
+    th = (max(s) - min(s)) / 10
+    n, low = 0, False
+    for v in s:
+        if v < -th:
+            low = True
+        elif v > th and low:
+            n, low = n + 1, False
+    return n * rate / len(s)
+
+
+def sound_onsets(s, rate):
+    """音の出だしの時刻（10ms ごとの振れ幅が、小さい → 大きいに変わった所）"""
+    win = rate // 100
+    amps = [max(s[i:i + win]) - min(s[i:i + win]) for i in range(0, len(s) - win, win)]
+    return [i * win / rate for i in range(1, len(amps)) if amps[i] > 2000 and amps[i - 1] < 1000]
+
+
+@test
+def tiny_mml():
+    """MML の演奏（mml.c）を PC の上で動かし（tools/mmlrender.c。sound.c・apu.c・mml.c はそのまま）、波形から確かめる:
+    音の高さ、音の頭の時刻（1/60 秒ごとに進めるので、テンポどおりにぴったり）、エンベロープ（離すとなめらかに消える）、繰り返し、タイ"""
+    import struct
+    exe = f"{ROOT}/build/mmlrender"
+    src = [f"{ROOT}/tiny/{f}" for f in ("tools/mmlrender.c", "sound.c", "apu.c", "mml.c")]
+    out = subprocess.run(["cc", "-Wall", "-DHOST", "-I", f"{ROOT}/tiny", "-o", exe, *src], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    rate = 48000
+
+    def render(ms, *tracks):
+        raw = subprocess.run([exe, str(ms), *tracks], capture_output=True).stdout
+        return struct.unpack(f"<{len(raw) // 2}h", raw)
+
+    s = render(2200, "t120 o4 l4 c d e f")
+    for i, want in enumerate((261.6, 293.7, 329.6, 349.2)):
+        a = int((i * 0.5 + 0.1) * rate)
+        assert abs(sound_freq(s[a:a + int(0.3 * rate)], rate) - want) < want * 0.02, (i, sound_freq(s[a:a + int(0.3 * rate)], rate))
+    assert sound_onsets(render(2200, "t120 o4 l4 q4 c d e f"), rate) == [0.5, 1.0, 1.5]
+    s = render(1500, "t60 o4 l4 @v0 q4 a r")                    # 1 拍 1 秒。0.5 秒で離し、9 6 4 2 1 0 と 1/60 秒ずつ
+    per = rate // 60
+    amp = [max(s[i:i + per]) - min(s[i:i + per]) for i in range(0, 45 * per, per)]
+    tail = amp[29:37]
+    assert all(a > b for a, b in zip(tail, tail[1:])) and tail[-1] == 0 and amp[20] > 3000, amp
+    assert sound_onsets(render(3000, "t120 o4 l4 q4 [c]3 r c4^4"), rate) == [0.5, 1.0, 2.0]
+
+
 @test
 def tiny_sound():
     """tiny: AC97 から音が出る（PCI のカードがメモリの 2 つのバッファを交互に読み、48,000 Hz・16 ビット・ステレオを流し続ける）。
-    sound コマンドの曲（ファミコンの音源）を QEMU で録音し（モニタの wavcapture）、約 5 秒途切れずに鳴って止まることを確かめる"""
+    シェルの play で MML を鳴らして QEMU で録音し（モニタの wavcapture）、4 つの音の高さと、0.5 秒ごとの音の頭を確かめる"""
     import struct, wave
     out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
@@ -1335,18 +1382,22 @@ def tiny_sound():
     try:
         vm.wait_screen(">")
         path = os.path.join(vm.mon_dir.name, "sound.wav")
-        vm.monitor(f'wavcapture "{path}" snd')
-        vm.type_keys("sound\n")
-        time.sleep(6.5)
+        vm.monitor(f'wavcapture "{path}" snd 48000')
+        vm.type_keys("play t120 o4 l4 q4 cdef\n")
+        time.sleep(3.5)
         vm.monitor("stopcapture 0")
         w = wave.open(path)
         n = w.getnframes()
         s = struct.unpack(f"<{n * 2}h", w.readframes(n))[::2]
-        half = w.getframerate() // 2
-        loud = [max(s[i:i + half]) - min(s[i:i + half]) > 4000 for i in range(0, len(s) - half, half)]
-        first, last = loud.index(True), len(loud) - 1 - loud[::-1].index(True)
-        assert 8 <= last - first + 1 <= 11 and all(loud[first:last + 1]), loud
-        vm.wait_screen("playing...\n>")
+        rate = w.getframerate()
+        start = next(i for i, v in enumerate(s) if abs(v) > 1000)
+        s = s[max(0, start - rate // 20):]
+        onsets = sound_onsets(s, rate)
+        assert [round(b - a, 2) for a, b in zip(onsets, onsets[1:])] == [0.5, 0.5, 0.5], onsets
+        for i, want in enumerate((261.6, 293.7, 329.6, 349.2)):
+            a = int((onsets[0] + i * 0.5 + 0.02) * rate) if i else int((onsets[0] + 0.02) * rate)
+            assert abs(sound_freq(s[a:a + int(0.2 * rate)], rate) - want) < want * 0.03, (i, sound_freq(s[a:a + int(0.2 * rate)], rate))
+        vm.wait_screen("> play t120 o4 l4 q4 cdef\n>")
     finally:
         vm.kill()
 

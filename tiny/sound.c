@@ -1,101 +1,94 @@
 // 音: AC97（ac97.s）が、バッファを 1 つ鳴らし終えるたびに割り込みの中から sound_fill を呼ぶ。
-// ここで 48,000 Hz・16 ビット・モノラルの波形を作る（左右に写すのは ac97.s）。いまはファミコンの音源（apu.c）だけを鳴らす
+// ここで 48,000 Hz・16 ビット・モノラルの波形を作る（左右に写すのは ac97.s）。
+// 波形はファミコンの音源（apu.c）が作り、1/60 秒（800 サンプル）ごとに MML の演奏（mml.c）を進める
 #include "tiny.h"
+#include "sound.h"
 
-void apu_render(short *buf, int n);
-void apu_write(int addr, int v);
-void apu_reset(void);
 extern unsigned char sound_ok;
 
 void sound_fill(short *buf, int n) {
-    static int ready;
+    static int ready, frame_left;
     if (!ready) {                               // 最初の 1 回（起動時、sound_init から）で音源を初めの状態に
         apu_reset();
         ready = 1;
     }
     for (int i = 0; i < n; i++) buf[i] = 0;
-    apu_render(buf, n);
-}
-
-// ---- 試しの曲（シェルの sound） ----
-
-// 音の名前（"C5"、"F#3"）から MIDI の番号。休みは -1
-static int note_number(const char **p) {
-    static const int base[7] = { 9, 11, 0, 2, 4, 5, 7 };   // A B C D E F G
-    const char *s = *p;
-    while (*s == ' ') s++;
-    if (*s == '.') {
-        *p = s + 1;
-        return -1;
+    while (n > 0) {                             // 1/60 秒の区切りまで作っては、曲を進める
+        if (frame_left == 0) {
+            mml_frame();
+            frame_left = SOUND_RATE / SOUND_FPS;
+        }
+        int k = n < frame_left ? n : frame_left;
+        apu_render(buf, k);
+        buf += k;
+        n -= k;
+        frame_left -= k;
     }
-    int n = base[*s - 'A'];
-    s++;
-    if (*s == '#') n++, s++;
-    n += (*s - '0' + 1) * 12;
-    *p = s + 1;
-    return n;
 }
 
-// MIDI の番号の周波数（1/1000 Hz）: 4 オクターブ目の表から、オクターブの分だけずらす
-static long note_mhz(int n) {
-    static const long c4[12] = { 261626, 277183, 293665, 311127, 329628, 349228,
-                                 369994, 391995, 415305, 440000, 466164, 493883 };
-    int oct = n / 12 - 5;
-    long f = c4[n % 12];
-    return oct >= 0 ? f << oct : f >> -oct;
-}
-
-// 矩形波の周期 = 1,789,773 ÷ (16 × 周波数) - 1。三角波は 32 で割る
-static int period(int n, int div) { return (int)(1789773000LL / (div * note_mhz(n))) - 1; }
-
-static void pulse(int ch, int n, int duty) {
-    int base = 0x4000 + ch * 4, t = period(n, 16);
-    apu_write(base, duty << 6 | 4);             // 音量は 15 から下がっていく（1 段 5/240 秒）
-    apu_write(base + 1, 0x08);                  // スイープは使わない（引き算にしておくと低い音も消えない）
-    apu_write(base + 2, t & 0xff);
-    apu_write(base + 3, 1 << 3 | t >> 8);       // 長さは長め（254）
-}
-
-static void triangle(int n) {
-    int t = period(n, 32);
-    apu_write(0x4008, 40);                      // リニアカウンタ 40/240 秒で止まる（歯切れよく）
-    apu_write(0x400a, t & 0xff);
-    apu_write(0x400b, 1 << 3 | t >> 8);
-}
-
-static void drum(char d) {
-    if (d == 'h') {                             // ハイハット: 高いノイズをすぐ小さく
-        apu_write(0x400c, 0x01);
-        apu_write(0x400e, 0x03);
-    } else {                                    // スネア: 中くらいのノイズを少し長く
-        apu_write(0x400c, 0x03);
-        apu_write(0x400e, 0x07);
+// 曲が終わるまで待つ。Esc で止める
+static void wait_song(void) {
+    while (mml_playing()) {
+        unsigned char c = getc_nowait();
+        if (c == KEY_ESC) {
+            mml_stop();
+            break;
+        }
+        halt();
     }
-    apu_write(0x400f, 1 << 3);
 }
+
+// ---- 試しの曲（シェルの sound）。オリジナル ----
+
+static const Song demo = {
+    .track = {
+        // 矩形波 1: メロディ（25%）。少し小さくしながら伸ばし、離したらゆっくり消える
+        "t132 l8 o5 @1 @v0 q7"
+        "e g >c< g a g e r f a >d< a g4 r4 e g >c< g a g e c d f e d c4 r4"
+        "@2 @v1 q6 [c e g e]2 [d f a f]2 c e g >c< b g e d c2 r2",
+        // 矩形波 2: ハモり（12.5%）
+        "l8 o4 @0 @v0 q7 v11"
+        "c4 e4 f4 c4 d4 f4 d4 r4 c4 e4 f4 c4 < b4 g4 > e4 r4"
+        "@v1 q6 v10 [e4 c4]2 [f4 d4]2 e4 c4 e4 g4 e2 r2",
+        // 三角波: ベース。短く歯切れよく
+        "l8 o3 q5"
+        "c c c c f f c c g g g g < g g > g g c c c c f f < a a g g g g > c4 r4"
+        "q6 [c4 g4]2 [f4 a4]2 c4 g4 < g4 > g4 c2 r2",
+        // ノイズ: ハイハットとスネア（1 は短く、2 は少し長く）
+        "l8 [@v2 o5 c r @v3 o4 g r @v2 o5 c c @v3 o4 g r]3 @v2 o5 c r @v3 o4 g r @v2 o5 c r @v3 o4 g g"
+        "[@v2 o5 c r @v3 o4 g r @v2 o5 c c @v3 o4 g r]4",
+    },
+    .envelope = {
+        "15 14 13 12 12 11 11 10 | 10 / 8 6 5 4 3 2 1 1 0",   // 0: やわらかく伸ばして、ゆっくり消える
+        "15 13 11 10 9 | 9 / 7 5 3 2 1 0",                     // 1: 少しはっきり
+        "12 8 5 3 1 0",                                        // 2: ハイハット
+        "15 12 10 8 6 5 4 3 2 1 0",                            // 3: スネア
+    },
+};
 
 void sound_demo(void) {
-    // 8 分音符ごと。オリジナルの短い曲
-    static const char *melody =  "E5 G5 C6 G5 A5 G5 E5 .  F5 A5 D6 A5 G5 .  .  .  E5 G5 C6 G5 A5 G5 E5 C5 D5 F5 E5 D5 C5 .  .  . ";
-    static const char *harmony = "C5 .  E5 .  F5 .  C5 .  D5 .  F5 .  D5 .  .  .  C5 .  E5 .  F5 .  C5 .  B4 .  G4 .  E4 .  .  . ";
-    static const char *bass =    "C3 .  C3 .  F3 .  C3 .  G3 .  G3 .  G3 .  G2 .  C3 .  C3 .  F3 .  A2 .  G2 .  G2 .  C3 .  C3 . ";
-    static const char *drums =   "h.s.h.s.h.s.hhs.h.s.h.s.h.s.s.s.";
     if (!sound_ok) {
         text_puts("no sound card\n");
         return;
     }
-    text_puts("playing...\n");
-    apu_reset();
-    apu_write(0x4015, 0x0f);
-    const char *m = melody, *h = harmony, *b = bass;
-    for (int i = 0; i < 32; i++) {
-        int n;
-        if ((n = note_number(&m)) >= 0) pulse(0, n, 1);
-        if ((n = note_number(&h)) >= 0) pulse(1, n, 2);
-        if ((n = note_number(&b)) >= 0) triangle(n);
-        if (drums[i] != '.') drum(drums[i]);
-        sleep_ticks(15);                        // 8 分音符 = 0.15 秒（テンポ 200）
+    text_puts("playing... (Esc: stop)\n");
+    mml_play(&demo);
+    wait_song();
+}
+
+// シェルの play: 打った MML を矩形波 1 で鳴らす（例: play t120 o4 cdefgab>c）
+void play_command(const char *mml) {
+    static char line[64];
+    static Song song = { .envelope = { "15 14 13 12 | 12 / 9 6 4 2 1 0" } };
+    if (!sound_ok) {
+        text_puts("no sound card\n");
+        return;
     }
-    sleep_ticks(40);
-    apu_write(0x4015, 0);
+    int i = 0;
+    for (const char *p = "@v0 q7 "; *p;) line[i++] = *p++;
+    while (*mml && i < (int)sizeof line - 1) line[i++] = *mml++;
+    line[i] = 0;
+    song.track[0] = line;
+    mml_play(&song);
+    wait_song();
 }
