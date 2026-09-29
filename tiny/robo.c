@@ -255,13 +255,6 @@ static void scroll(void) {
     if (G.cam < 0) G.cam = 0;
 }
 
-// テストが読むので、毎コマ写しておく
-static void mirror(void) {
-    G.power = pl.power;
-    G.px = pl.b.x >> 4;
-    G.py = pl.b.y >> 4;
-}
-
 // ---- 場面 ----
 
 static int intro(void) {
@@ -299,12 +292,19 @@ static int bridge_step(int timer) {
     return 0;
 }
 
+// テストが読むので、毎コマ写しておく
+static void mirror(void) {
+    G.power = pl.power;
+    G.px = pl.b.x >> 4;
+    G.py = pl.b.y >> 4;
+}
+
 static int play_stage(void) {
     build_stage(G.stage);
     actors_reset();
     int col = G.checkpoint_reached && st.checkpoint ? st.checkpoint : 2;
     player_place(col);
-    G.cam = 0;
+    mirror();
     G.cam = col * TILE - 48 > 0 ? col * TILE - 48 : 0;
     scroll();
     G.time = st.time;

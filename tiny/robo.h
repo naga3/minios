@@ -38,6 +38,8 @@ typedef struct {
     int power;              // 0 小さい、1 大きい、2 ブラスター
     int facing;             // 0 右、1 左
     int on_ground, jump_held, fire_held;
+    int coyote;             // 足場から出た直後でも跳べる残りのコマ
+    int jump_buffer;        // 着地の少し前に押した跳ぶキーを覚えておく残りのコマ
     int anim;
     int hurt;               // 当たっても平気な残りのコマ（点滅）
     int star;               // スターの残りのコマ

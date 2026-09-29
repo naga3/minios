@@ -8,9 +8,10 @@ static int next_spawn;              // 次に出す spawns の番号
 static int multi_c = -1, multi_r, multi_left;   // コインが何枚も出るれんが
 
 enum {
-    GRAV = 6, GRAV_FAST = 18, MAX_FALL = 112,
-    WALK_MAX = 36, RUN_MAX = 60, ACCEL = 3, AIR_ACCEL = 2, SKID = 6, FRICTION = 3,
+    GRAV = 6, GRAV_FAST = 12, MAX_FALL = 96,
+    WALK_MAX = 36, RUN_MAX = 60, ACCEL = 2, AIR_ACCEL = 2, SKID = 4, FRICTION = 2,
     JUMP_V = 114, STOMP_V = 80, STOMP_V_HELD = 116,
+    COYOTE = 6, JUMP_BUFFER = 6, HURT_TIME = 150,
 };
 
 static int iabs(int v) { return v < 0 ? -v : v; }
@@ -183,7 +184,7 @@ void hurt_player(void) {
     if (pl.power) {
         pl.power = 0;
         player_size();
-        pl.hurt = 100;
+        pl.hurt = HURT_TIME;
     } else {
         kill_player();
     }
@@ -336,10 +337,16 @@ void player_update(void) {
     }
     if (pl.on_ground && *vx > max) *vx -= 2;           // 走るのをやめたら、少しずつ遅く
     if (pl.on_ground && *vx < -max) *vx += 2;
-    if (jump && !pl.jump_held && pl.on_ground) {         // 押した瞬間だけ跳ぶ。走っていると高く
+    // 押した瞬間だけ跳ぶ。走っていると高く。着地の少し前に押しても、足場から出た直後に押しても跳べる
+    if (jump && !pl.jump_held) pl.jump_buffer = JUMP_BUFFER;
+    if (pl.on_ground) pl.coyote = COYOTE;
+    if (pl.jump_buffer && pl.coyote) {
         pl.b.vy = -(JUMP_V + iabs(*vx) / 4);
         pl.on_ground = 0;
+        pl.jump_buffer = pl.coyote = 0;
     }
+    if (pl.jump_buffer) pl.jump_buffer--;
+    if (!pl.on_ground && pl.coyote) pl.coyote--;
     pl.jump_held = jump;
     if (fire && !pl.fire_held && pl.power == 2) shoot();
     pl.fire_held = fire;
@@ -734,8 +741,21 @@ void things_update(void) {
 
 // ---- ロボットとの当たり ----
 
+// 踏む判定は広く: ロボットの左右 4 点外まで、敵の足もとの 2 点上まで（落ちているとき）。
+// 痛い判定は狭く: 敵の左右を 2 点、上を 3 点削る
 static int stomping(Thing *t) {
-    return pl.b.vy > 0 && (pl.b.y >> 4) + pl.b.h - (t->b.y >> 4) < 10;
+    Body wide = pl.b;
+    wide.x -= 4 << 4;
+    wide.w += 8;
+    return pl.b.vy > 0 && (pl.b.y >> 4) + pl.b.h - (t->b.y >> 4) <= t->b.h - 2 && overlap(&wide, &t->b);
+}
+
+static int hurts(Body e) {
+    e.x += 2 << 4;
+    e.w -= 4;
+    e.y += 3 << 4;
+    e.h -= 3;
+    return overlap(&pl.b, &e);
 }
 
 static void touch_enemy(Thing *t) {
@@ -746,7 +766,7 @@ static void touch_enemy(Thing *t) {
     int can_stomp = t->type == T_WALKER || t->type == T_BEETLE || t->type == T_FLYER || t->type == T_BULLET ||
                     t->type == T_THROWER;
     if (!can_stomp || !stomping(t)) {
-        hurt_player();
+        if (hurts(t->b)) hurt_player();
         return;
     }
     pl.b.vy = pl.jump_held ? -STOMP_V_HELD : -STOMP_V;
@@ -788,7 +808,7 @@ static void touch_shell(Thing *t) {
         t->timer = 400;
         pl.b.vy = -STOMP_V;
         add_score(100);
-    } else {
+    } else if (hurts(t->b)) {
         hurt_player();
     }
 }
@@ -865,13 +885,13 @@ void interact(void) {
             if (t->state) break;
             /* fallthrough */
         case T_BEETLE: case T_FLYER: case T_SPIKY: case T_BULLET: case T_THROWER:
-            if (overlap(&pl.b, &t->b)) touch_enemy(t);
+            if (stomping(t) || overlap(&pl.b, &t->b)) touch_enemy(t);
             break;
         case T_BOSS:
             if (t->hp > 0 && overlap(&pl.b, &t->b)) touch_enemy(t);
             break;
         case T_SHELL:
-            if (overlap(&pl.b, &t->b)) touch_shell(t);
+            if (stomping(t) || overlap(&pl.b, &t->b)) touch_shell(t);
             break;
         case T_PLANT: {
             Body v = t->b;                  // 土管から出ている分だけ
