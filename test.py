@@ -1149,7 +1149,7 @@ class TinyVM(VM):
         self.buf = self.log = b""
         self.p = subprocess.Popen(
             ["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/tiny/kernel.elf", "-display", "none", "-serial", "none",
-             "-audiodev", "none,id=snd", "-device", "sb16,audiodev=snd", "-monitor", f"unix:{self.mon_path},server,nowait"],
+             "-audiodev", "none,id=snd", "-device", "AC97,audiodev=snd", "-monitor", f"unix:{self.mon_path},server,nowait"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         if TinyVM.FONT is None:
             TinyVM.FONT = tiny_font()
@@ -1269,7 +1269,7 @@ def tiny_apu():
     out = subprocess.run(["cc", "-Wall", "-DHOST", "-I", f"{ROOT}/tiny", "-o", exe, f"{ROOT}/tiny/tools/apurender.c",
                           f"{ROOT}/tiny/apu.c"], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
-    rate = 22050
+    rate = 48000
 
     def render(*regs):
         raw = subprocess.run([exe, *regs], capture_output=True).stdout
@@ -1310,13 +1310,13 @@ def tiny_apu():
     tri = render("4015=04", "4008=ff", "400a=fd", "400b=08", "@500")[2000:]                # 三角波は 32 で割るので 220.2 Hz
     assert abs(freq(tri) - 220.2) < 2, freq(tri)
     noise = render("4015=08", "400c=3f", "400e=08", "400f=08", "@400")[2000:]
-    short = render("4015=08", "400c=3f", "400e=88", "400f=08", "@400")[2000:]              # 93 × 202 クロック = 231 サンプル
-    assert abs(autocorr(noise, 231)) < 0.2 and autocorr(short, 231) > 0.7, (autocorr(noise, 231), autocorr(short, 231))
+    short = render("4015=08", "400c=3f", "400e=88", "400f=08", "@400")[2000:]              # 93 × 202 クロック = 504 サンプル
+    assert abs(autocorr(noise, 504)) < 0.2 and autocorr(short, 504) > 0.7, (autocorr(noise, 504), autocorr(short, 504))
 
 
 @test
 def tiny_sound():
-    """tiny: Sound Blaster 16 から音が出る（DMA と IRQ5 で 22,050 Hz・16 ビットを流し続ける）。
+    """tiny: AC97 から音が出る（PCI のカードがメモリの 2 つのバッファを交互に読み、48,000 Hz・16 ビット・ステレオを流し続ける）。
     sound コマンドの曲（ファミコンの音源）を QEMU で録音し（モニタの wavcapture）、約 5 秒途切れずに鳴って止まることを確かめる"""
     import struct, wave
     out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)

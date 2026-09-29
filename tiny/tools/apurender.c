@@ -1,4 +1,4 @@
-// ファミコンの音源（apu.c）を PC の上で動かし、波形を出す（22,050 Hz・16 ビット・モノラルの生データを標準出力へ）。
+// ファミコンの音源（apu.c）を PC の上で動かし、波形を出す（48,000 Hz・16 ビット・モノラルの生データを標準出力へ）。
 // 引数は順に実行する: 4000=bf（レジスタに書く）、@500（500 ミリ秒ぶん作る）
 //   cc -DHOST -I tiny -o build/apurender tiny/tools/apurender.c tiny/apu.c
 //   build/apurender 4015=01 4000=bf 4001=08 4002=fd 4003=08 @500 > a.raw
@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         char *a = argv[i];
         if (a[0] == '@') {
-            int n = atoi(a + 1) * 22050 / 1000;
+            int n = atoi(a + 1) * 48000 / 1000;
             short *buf = calloc(n, sizeof *buf);
             apu_render(buf, n);
             fwrite(buf, sizeof *buf, n, stdout);

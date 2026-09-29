@@ -6,7 +6,7 @@
 enum {
     CLOCK = 1789773,
 #ifndef RATE
-    RATE = 22050,
+    RATE = 48000,
 #endif
     SAMPLE = (int)((256LL * CLOCK) / RATE),     // 1 サンプルの長さ（1/256 クロック）
     QUARTER = 7457 * 256,                       // フレームカウンタの 1/4（240 Hz）
