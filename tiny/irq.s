@@ -1,7 +1,7 @@
 # 割り込み: IDT（割り込みの入り口の表）、割り込みコントローラ（PIC）、タイマー（PIT、1 秒に 100 回）
 #
 # 割り込みが来ると、CPU は今の仕事を止めて IDT の入り口に飛び、iretq で元の仕事に戻る。
-# 使うのは タイマー（IRQ0 → 32 番）とキーボード（IRQ1 → 33 番）だけ。CPU の例外（0〜31 番）が起きたら、知らせて止まる
+# 使うのは タイマー（IRQ0 → 32 番）、キーボード（IRQ1 → 33 番）、音（IRQ5 → 37 番。sb16.s が通す）。CPU の例外（0〜31 番）が起きたら、知らせて止まる
     .code64
     .text
     .global irq_init, ticks, sleep_ticks
@@ -21,8 +21,11 @@ irq_init:
     jne 3f
     mov $timer_isr, %rax
 3:  cmp $33, %ecx
-    jne 2f
+    jne 4f
     mov $kbd_isr, %rax
+4:  cmp $37, %ecx
+    jne 2f
+    mov $sb16_isr, %rax                 # IRQ5: Sound Blaster 16（sb16.s）
 2:  mov %ax, (%rdi)                     # 入り口の番地の下位 16 ビット
     movw $0x08, 2(%rdi)                 # コードのセグメント（boot.s の GDT）
     movb $0, 4(%rdi)

@@ -6,9 +6,12 @@ cd "$(dirname "$0")"
 # ./run.sh tiny: アセンブリだけの自作カーネル（tiny/。320 × 200・256 色の画面と PS/2 キーボード）で起動する。
 # 画面はウィンドウに出る（WSL なら WSLg）。ウィンドウを閉じると終わる。
 # Ctrl+Alt+F でフルスクリーンの切り替え、Ctrl+Alt+G でウィンドウに取られたマウスとキーボードを返してもらう
+# 音は Sound Blaster 16 から、PulseAudio（WSL なら WSLg）へ。PulseAudio が無ければ鳴らさない
 if [ "$1" = tiny ]; then
     tiny/build.sh
-    exec qemu-system-x86_64 -kernel build/tiny/kernel.elf -display gtk -serial none
+    audio="none,id=snd"
+    if [ -n "$PULSE_SERVER" ] || [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/pulse/native" ]; then audio="pa,id=snd"; fi
+    exec qemu-system-x86_64 -kernel build/tiny/kernel.elf -display gtk -serial none -audiodev $audio -device sb16,audiodev=snd
 fi
 # ./run.sh scratch: Linux の代わりに自作カーネル（kernel/）で起動する
 if [ "$1" = scratch ]; then

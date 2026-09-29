@@ -1149,7 +1149,7 @@ class TinyVM(VM):
         self.buf = self.log = b""
         self.p = subprocess.Popen(
             ["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/tiny/kernel.elf", "-display", "none", "-serial", "none",
-             "-monitor", f"unix:{self.mon_path},server,nowait"],
+             "-audiodev", "none,id=snd", "-device", "sb16,audiodev=snd", "-monitor", f"unix:{self.mon_path},server,nowait"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         if TinyVM.FONT is None:
             TinyVM.FONT = tiny_font()
@@ -1256,6 +1256,80 @@ def tiny_snake():
         assert "SNAKE" not in s, s
         vm.type_keys("hi\n")
         vm.wait_screen("> hi\nhi\n>")
+    finally:
+        vm.kill()
+
+
+@test
+def tiny_apu():
+    """ファミコンの音源（apu.c）を PC の上で動かし（tools/apurender.c）、波形から確かめる:
+    矩形波の高さと音色（12.5・25・50%）、音量の減衰、長さのカウンタ、三角波、ノイズ（短い周期は 93 ステップで繰り返す）"""
+    import struct
+    exe = f"{ROOT}/build/apurender"
+    out = subprocess.run(["cc", "-Wall", "-DHOST", "-I", f"{ROOT}/tiny", "-o", exe, f"{ROOT}/tiny/tools/apurender.c",
+                          f"{ROOT}/tiny/apu.c"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    rate = 22050
+
+    def render(*regs):
+        raw = subprocess.run([exe, *regs], capture_output=True).stdout
+        return struct.unpack(f"<{len(raw) // 2}h", raw)
+
+    def freq(s):
+        return sum(1 for a, b in zip(s, s[1:]) if a < 0 <= b) * rate / len(s)
+
+    def duty(s):
+        mid = (max(s) + min(s)) / 2
+        return sum(1 for v in s if v > mid) / len(s)
+
+    def sounding(s, ms=25):                            # 鳴っている 25ms の区切りの数
+        n = rate * ms // 1000
+        return sum(1 for i in range(0, len(s) - n + 1, n) if max(s[i:i + n]) - min(s[i:i + n]) > 1000)
+
+    def autocorr(s, lag):
+        m = sum(s) / len(s)
+        a = [v - m for v in s]
+        return sum(x * y for x, y in zip(a, a[lag:])) / sum(x * x for x in a)
+
+    a4 = render("4015=01", "4000=bf", "4001=08", "4002=fd", "4003=08", "@500")[2000:]    # 周期 253 = 440.4 Hz
+    assert abs(freq(a4) - 440.4) < 4 and abs(duty(a4) - 0.5) < 0.01, (freq(a4), duty(a4))
+    for reg, want in (("7f", 0.25), ("3f", 0.125)):
+        s = render("4015=01", "4000=" + reg, "4001=08", "4002=fd", "4003=08", "@300")[2000:]
+        assert abs(duty(s) - want) < 0.01, (reg, duty(s))
+    decay = render("4015=01", "4000=83", "4001=08", "4002=fd", "4003=08", "@500")          # 15 段 × 4/240 秒 = 0.25 秒
+    assert 9 <= sounding(decay) <= 12, sounding(decay)
+    length = render("4015=01", "4000=9f", "4001=08", "4002=fd", "4003=00", "@300")         # 長さ 10 × 1/120 秒 = 0.083 秒
+    assert 3 <= sounding(length) <= 5, sounding(length)
+    tri = render("4015=04", "4008=ff", "400a=fd", "400b=08", "@500")[2000:]                # 三角波は 32 で割るので 220.2 Hz
+    assert abs(freq(tri) - 220.2) < 2, freq(tri)
+    noise = render("4015=08", "400c=3f", "400e=08", "400f=08", "@400")[2000:]
+    short = render("4015=08", "400c=3f", "400e=88", "400f=08", "@400")[2000:]              # 93 × 202 クロック = 231 サンプル
+    assert abs(autocorr(noise, 231)) < 0.2 and autocorr(short, 231) > 0.7, (autocorr(noise, 231), autocorr(short, 231))
+
+
+@test
+def tiny_sound():
+    """tiny: Sound Blaster 16 から音が出る（DMA と IRQ5 で 22,050 Hz・16 ビットを流し続ける）。
+    sound コマンドの曲（ファミコンの音源）を QEMU で録音し（モニタの wavcapture）、約 5 秒途切れずに鳴って止まることを確かめる"""
+    import struct, wave
+    out = subprocess.run([f"{ROOT}/tiny/build.sh"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    vm = TinyVM()
+    try:
+        vm.wait_screen(">")
+        path = os.path.join(vm.mon_dir.name, "sound.wav")
+        vm.monitor(f'wavcapture "{path}" snd')
+        vm.type_keys("sound\n")
+        time.sleep(6.5)
+        vm.monitor("stopcapture 0")
+        w = wave.open(path)
+        n = w.getnframes()
+        s = struct.unpack(f"<{n * 2}h", w.readframes(n))[::2]
+        half = w.getframerate() // 2
+        loud = [max(s[i:i + half]) - min(s[i:i + half]) > 4000 for i in range(0, len(s) - half, half)]
+        first, last = loud.index(True), len(loud) - 1 - loud[::-1].index(True)
+        assert 8 <= last - first + 1 <= 11 and all(loud[first:last + 1]), loud
+        vm.wait_screen("playing...\n>")
     finally:
         vm.kill()
 

@@ -10,6 +10,7 @@ main:
     cld                                 # 文字列の命令（lodsb など）が前へ進むように
     call screen_init
     call irq_init                       # 割り込み（タイマーとキーボード）
+    call sound_init                     # 音（Sound Blaster 16。無ければ鳴らさない）
     call sprite_init                    # スプライトの文字 → 色 の表
     mov $0x0107, %ax                    # 背景は青（1）、文字は明るい灰色（7）
     call con_color
@@ -38,6 +39,9 @@ main:
     mov $cmd_clear, %rdi
     call streq
     jnz 3f
+    mov $cmd_sound, %rdi
+    call streq
+    jnz 6f
     mov $cmd_help, %rdi
     call streq
     jnz 4f
@@ -57,6 +61,8 @@ main:
     jmp 1b
 5:  mov %rax, %rdi                      # C の jump_main(引数)
     call jump_main
+    jmp 1b
+6:  call sound_demo
     jmp 1b
 
 # streq: rsi と rdi の文字列が同じなら ZF = 0（jnz で飛べる）
@@ -168,8 +174,9 @@ subtitle: .asciz "\nThe quick brown fox jumps over\nthe lazy dog. 0123456789 !?@
 cmd_snake: .asciz "snake"
 cmd_jump:  .asciz "jump"
 cmd_clear: .asciz "clear"
+cmd_sound: .asciz "sound"
 cmd_help:  .asciz "help"
-help_text: .asciz "snake  play the snake game\njump   ROBO JUMP (jump 3-2: from 3-2)\nclear  clear the screen\nother  echo the line\n"
+help_text: .asciz "snake  play the snake game\njump   ROBO JUMP (jump 3-2: from 3-2)\nclear  clear the screen\nsound  play a tune (NES-style sound)\nother  echo the line\n"
 prompt:   .asciz "> "
 newline:  .asciz "\n"
 erase:    .asciz "\b \b"
