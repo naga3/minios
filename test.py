@@ -1149,7 +1149,7 @@ class TinyVM(VM):
         self.buf = self.log = b""
         self.p = subprocess.Popen(
             ["qemu-system-x86_64", *ACCEL, "-kernel", f"{ROOT}/build/tiny/kernel.elf", "-display", "none", "-serial", "none",
-             "-audiodev", "none,id=snd", "-device", "AC97,audiodev=snd", "-monitor", f"unix:{self.mon_path},server,nowait"],
+             "-audiodev", "none,id=snd,out.frequency=48000", "-device", "AC97,audiodev=snd", "-monitor", f"unix:{self.mon_path},server,nowait"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         if TinyVM.FONT is None:
             TinyVM.FONT = tiny_font()

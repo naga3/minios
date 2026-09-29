@@ -9,8 +9,9 @@ cd "$(dirname "$0")"
 # 音は AC97（PCI のサウンドカード）から PulseAudio（WSL なら WSLg）へ。PulseAudio が無ければ鳴らさない
 if [ "$1" = tiny ]; then
     tiny/build.sh
-    audio="none,id=snd"
-    if [ -n "$PULSE_SERVER" ] || [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/pulse/native" ]; then audio="pa,id=snd"; fi
+    # QEMU は既定で 44,100 Hz に変換して出し、その変換（線形補間）が雑音を足す。こちらと同じ 48,000 Hz のまま渡す
+    audio="none,id=snd,out.frequency=48000"
+    if [ -n "$PULSE_SERVER" ] || [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/pulse/native" ]; then audio="pa,id=snd,out.frequency=48000"; fi
     accel="-accel tcg"
     [ -r /dev/kvm ] && [ -w /dev/kvm ] && accel="-accel kvm -cpu host"
     exec qemu-system-x86_64 $accel -kernel build/tiny/kernel.elf -display gtk -serial none -audiodev $audio -device AC97,audiodev=snd
