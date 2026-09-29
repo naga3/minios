@@ -7,6 +7,8 @@ enum { SOUND_RATE = 48000, SOUND_FPS = 60 };   // 波形の速さ、曲を進め
 void apu_reset(void);
 void apu_write(int addr, int v);
 void apu_render(short *buf, int n);
+void apu_smooth(int on);         // 音量の変化を数ミリ秒かけてなめらかにする（本物には無い。既定は切る）
+int apu_smoothing(void);
 
 // MML の演奏（mml.c）。曲は 4 つの文字列（矩形波 1、矩形波 2、三角波、ノイズ）と、音量の動き（エンベロープ）の一覧
 typedef struct {

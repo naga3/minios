@@ -21,9 +21,10 @@ OS（画面、キーボード、割り込み）はアセンブリで、ゲーム
   いまはファミコンの音源（tiny/apu.c: 矩形波 2 音、三角波、ノイズ。レジスタ $4000〜$4017 は本物と同じ）。
   曲は MML で書く（tiny/mml.c。書き方はファイルの先頭。音量の動き（エンベロープ）で、音の終わりをなめらかにできる）
 - C から OS の関数を呼ぶ入口は tiny/c.s、宣言は tiny/tiny.h
-- シェルのコマンドは `help`・`clear`・`sound`・`play`・`snake`・`jump`。それ以外は打った行をそのまま返す
+- シェルのコマンドは `help`・`clear`・`sound`・`play`・`smooth`・`snake`・`jump`。それ以外は打った行をそのまま返す
 - `sound`: ファミコンの音源で短い曲を鳴らす（`./run.sh tiny` なら PulseAudio、WSL なら WSLg から聞こえる）。Esc で止める
 - `play`: 打った MML をその場で鳴らす（例: `play t120 o4 l8 cdefgab>c`）
+- `smooth`: 音量の変化を数ミリ秒かけてなめらかにする・しない を切り替える（本物のファミコンには無い。聞き比べ用）
 - `snake`: スネーク。矢印か WASD で曲がり、Esc でシェルに戻る。壁か自分に当たったら Enter でもう一度
 - `jump`: ROBO JUMP（下）
 - QEMU のウィンドウでは、Ctrl+Alt+F でフルスクリーンの切り替え、Ctrl+Alt+G でキーボードとマウスを返してもらう

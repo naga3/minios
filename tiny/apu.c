@@ -45,6 +45,7 @@ typedef struct {
     int sweep_on, sweep_period, sweep_negate, sweep_shift, sweep_divider, sweep_reload;
     int ones_complement;                    // 矩形波 1 はスイープの引き算が 1 だけ多い
     int level;                              // 今の出力の高さ（重みをかけた後）
+    int gain;                               // 今の音量（重みをかけた後。なめらかにするときは目標へ少しずつ近づく）
 } Pulse;
 
 static struct {
@@ -58,10 +59,12 @@ static struct {
         int enabled, length, halt;
         int period, counter, mode;
         unsigned shift;                     // 15 ビットの疑似乱数（LFSR）
-        int level;
+        int level, gain;
     } noise;
     int frame_counter, frame_step, five_step;
     long acc;                               // 段差を積み上げた今の値（× 32768）
+    int smooth;                             // 音量の変化をなめらかにする（本物には無い）
+    long smooth_counter;                    // 次に音量を近づけるまで（1/256 クロック）
     int dc;                                 // 直流分（1/256）
 } apu;
 
@@ -207,7 +210,9 @@ static void clear_steps(void);
 
 void apu_reset(void) {
     unsigned long f = irq_off();
+    int smooth = apu.smooth;                // 音量をなめらかにするかどうかは、リセットしても残す
     apu = (__typeof__(apu)){0};
+    apu.smooth = smooth;
     apu.pulse[0].ones_complement = 1;
     apu.noise.shift = 1;
     apu.noise.period = noise_table[0];
@@ -283,27 +288,56 @@ static void set_level(int *level, int v, long t) {
     }
 }
 
-static int pulse_level(const Pulse *p) {
-    if (p->length == 0 || pulse_muted(p) || !duty_table[p->duty][p->step]) return 0;
-    return envelope_out(&p->env) * W_PULSE;
+// 鳴らすべき音量（目標）と、今の出力。音色の角（波形の段差）はそのまま、音量だけを gain で持つ
+static int pulse_target(const Pulse *p) {
+    return p->length == 0 || pulse_muted(p) ? 0 : envelope_out(&p->env) * W_PULSE;
 }
+
+static int pulse_level(const Pulse *p) { return duty_table[p->duty][p->step] ? p->gain : 0; }
 
 static int triangle_running(void) {         // 周期 2 未満は聞こえない高さなので止める
     return apu.tri.length > 0 && apu.tri.linear > 0 && apu.tri.timer >= 2;
 }
 
-static int noise_level(void) {
-    if (apu.noise.length == 0 || (apu.noise.shift & 1)) return 0;
-    return envelope_out(&apu.noise.env) * W_NOISE;
-}
+static int noise_target(void) { return apu.noise.length == 0 ? 0 : envelope_out(&apu.noise.env) * W_NOISE; }
 
-// 音量の変化やレジスタの書き換えを、時刻 t の段差にする
+static int noise_level(void) { return apu.noise.shift & 1 ? 0 : apu.noise.gain; }
+
+// 音量の変化やレジスタの書き換えを、時刻 t の段差にする。なめらかにしないときは、音量をすぐ目標にする
 static void update_levels(long t) {
+    if (!apu.smooth) {
+        apu.pulse[0].gain = pulse_target(&apu.pulse[0]);
+        apu.pulse[1].gain = pulse_target(&apu.pulse[1]);
+        apu.noise.gain = noise_target();
+    }
     set_level(&apu.pulse[0].level, pulse_level(&apu.pulse[0]), t);
     set_level(&apu.pulse[1].level, pulse_level(&apu.pulse[1]), t);
     set_level(&apu.tri.level, triangle_table[apu.tri.step] * W_TRI, t);
     set_level(&apu.noise.level, noise_level(), t);
 }
+
+// なめらかにする（B）: 1/3 ミリ秒（16 サンプル）ごとに、音量を目標との差の 1/8 だけ近づける（約 2.7 ミリ秒で 6 割）。
+// 急な音量の段差（音の出だしや、エンベロープの 1 段）が、ごく短い坂になる
+enum { SMOOTH_TICK = 16 };
+static int approach(int g, int target) {
+    int d = target - g;
+    return d > -8 && d < 8 ? target : g + d / 8;
+}
+
+static void smooth_step(long t) {
+    apu.pulse[0].gain = approach(apu.pulse[0].gain, pulse_target(&apu.pulse[0]));
+    apu.pulse[1].gain = approach(apu.pulse[1].gain, pulse_target(&apu.pulse[1]));
+    apu.noise.gain = approach(apu.noise.gain, noise_target());
+    update_levels(t);
+}
+
+void apu_smooth(int on) {
+    unsigned long f = irq_off();
+    apu.smooth = on;
+    irq_restore(f);
+}
+
+int apu_smoothing(void) { return apu.smooth; }
 
 // [t0, t1) の間、周期ごとに波形を進め、変わった時刻に段差を置く。counter は次に進むまでの時間
 static void pulse_run(Pulse *p, long t0, long t1) {
@@ -345,15 +379,21 @@ static void noise_run(long t0, long t1) {
 static void render_block(short *buf, int n) {
     long end = (long)n * SAMPLE, t = 0;
     update_levels(0);                       // 前のブロックの後に書かれたレジスタ
-    while (t < end) {                       // フレームカウンタの区切りごとに進める
+    while (t < end) {                       // フレームカウンタの区切り（と、なめらかにするときは音量を近づける区切り）ごとに進める
         long seg = QUARTER - apu.frame_counter;
+        if (apu.smooth && apu.smooth_counter < seg) seg = apu.smooth_counter;
         long t1 = t + seg < end ? t + seg : end;
         pulse_run(&apu.pulse[0], t, t1);
         pulse_run(&apu.pulse[1], t, t1);
         triangle_run(t, t1);
         noise_run(t, t1);
         apu.frame_counter += t1 - t;
+        apu.smooth_counter -= t1 - t;
         t = t1;
+        if (apu.smooth_counter <= 0) {
+            apu.smooth_counter += (long)SMOOTH_TICK * SAMPLE;
+            if (apu.smooth) smooth_step(t);
+        }
         if (apu.frame_counter >= QUARTER) {
             apu.frame_counter -= QUARTER;
             frame_step();

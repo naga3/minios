@@ -92,3 +92,9 @@ void play_command(const char *mml) {
     mml_play(&song);
     wait_song();
 }
+
+// シェルの smooth: 音量の変化をなめらかにする（本物には無い）・しない を切り替える
+void smooth_command(void) {
+    apu_smooth(!apu_smoothing());
+    text_puts(apu_smoothing() ? "smooth volume: on\n" : "smooth volume: off (like the real NES)\n");
+}

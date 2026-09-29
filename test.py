@@ -1322,6 +1322,14 @@ def tiny_apu():
     noise = render("4015=08", "400c=3f", "400e=08", "400f=08", "@400")[2000:]
     short = render("4015=08", "400c=3f", "400e=88", "400f=08", "@400")[2000:]              # 93 × 202 クロック = 504 サンプル
     assert abs(autocorr(noise, 504)) < 0.2 and autocorr(short, 504) > 0.7, (autocorr(noise, 504), autocorr(short, 504))
+    # 音量をなめらかにする（smooth。本物には無い）: 15 → 0 に下げたとき、本物は一度に下がり、なめらかにすると数ミリ秒の坂になる
+    win = rate // 1000
+    for mode, lo, hi in (([], 0, 0.1), (["smooth"], 0.5, 0.8)):
+        s = render(*mode, "4015=01", "4000=bf", "4001=08", "4002=1f", "4003=08", "@100", "4000=b0", "@20")
+        base = int(0.1 * rate)
+        before = max(s[base - 2 * win:base - win]) - min(s[base - 2 * win:base - win])
+        after = max(s[base + win:base + 2 * win]) - min(s[base + win:base + 2 * win])     # 1〜2ms 後
+        assert lo * before <= after <= hi * before, (mode, before, after)
 
 
 def sound_freq(s, rate):
