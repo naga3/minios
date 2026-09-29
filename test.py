@@ -1178,6 +1178,16 @@ class TinyVM(VM):
             lines.append(line.rstrip())
         return "\n".join(lines).rstrip()
 
+    def escape_to_shell(self):
+        """Esc でシェルに戻る。QEMU の sendkey は、押しっぱなしの時間つきのキーを続けて送った後だと、
+        次のキーを送るまで最後のキーが出てこないことがある。戻らなければ Shift（文字にならない）を送って押し出す"""
+        self.monitor("sendkey esc")
+        try:
+            return self.wait_screen(">", 3)
+        except Timeout:
+            self.monitor("sendkey shift")
+            return self.wait_screen(">")
+
     def wait_screen(self, text, timeout=10):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -1393,13 +1403,11 @@ def tiny_robo():
                 break
         g = wait(lambda g: g["state"] == 0, "clear, back to the title", 20)   # 城に入り、残り時間を点数にして、タイトルへ
         assert g["score"] > 1000, g
-        vm.monitor("sendkey esc")
-        vm.wait_screen(">")
+        vm.escape_to_shell()
         vm.type_keys("jump 8-4\n")                                     # 最後の城から始める
         g = wait(lambda g: g["state"] == 2, "8-4")
         assert g["stage"] == 31 and "WORLD 8-4" in vm.screen(bg=0), g
-        vm.monitor("sendkey esc")
-        s = vm.wait_screen(">")
+        s = vm.escape_to_shell()
         assert "WORLD" not in s, s
     finally:
         vm.kill()
