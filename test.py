@@ -1275,8 +1275,15 @@ def tiny_apu():
         raw = subprocess.run([exe, *regs], capture_output=True).stdout
         return struct.unpack(f"<{len(raw) // 2}h", raw)
 
-    def freq(s):
-        return sum(1 for a, b in zip(s, s[1:]) if a < 0 <= b) * rate / len(s)
+    def freq(s):                                       # 振れ幅の 1 割の余裕を持たせて、下から上へ横切る回数
+        th = (max(s) - min(s)) / 10
+        n, low = 0, False
+        for v in s:
+            if v < -th:
+                low = True
+            elif v > th and low:
+                n, low = n + 1, False
+        return n * rate / len(s)
 
     def duty(s):
         mid = (max(s) + min(s)) / 2
