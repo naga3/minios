@@ -1,6 +1,1 @@
-/linux-*/
-/linux-*.tar.xz
 /build/
-/disk.img
-/third_party/
-__pycache__/
