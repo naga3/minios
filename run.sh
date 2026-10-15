@@ -5,6 +5,12 @@
 # 音は AC97（PCI のサウンドカード）から PulseAudio（WSL なら WSLg）へ。PulseAudio が無ければ鳴らさない
 set -e
 cd "$(dirname "$0")"
+# ./run.sh pi: Raspberry Pi 3（aarch64。pi/）を QEMU の raspi3b で起動する。画面はウィンドウ、キー入力はこのターミナル（シリアル）。
+# 終了は Ctrl+A → X。音はまだ出ない（波形を作るところまで）
+if [ "$1" = pi ]; then
+    pi/build.sh
+    exec qemu-system-aarch64 -M raspi3b -kernel build/pi/kernel8.img -display gtk -serial stdio
+fi
 tiny/build.sh
 # QEMU は既定で 44,100 Hz に変換して出し、その変換（線形補間）が雑音を足す。こちらと同じ 48,000 Hz のまま渡す。
 # 録音（マイク）は使わないので開かない（in.voices=0）。起動時の「pulseaudio: set_sink_input_volume() failed」は、
