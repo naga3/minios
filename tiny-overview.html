@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>minios tiny: システム構成</title>
+<style>
+  body { font-family: sans-serif; max-width: 920px; margin: 32px auto; padding: 0 16px; color: #222; line-height: 1.55; }
+  h1 { font-size: 24px; margin-bottom: 2px; }
+  h2 { font-size: 17px; margin: 32px 0 8px; border-left: 5px solid #e0682a; padding-left: 8px; }
+  .lead { color: #555; margin-top: 0; }
+  code, .mono { font-family: monospace; font-size: 13px; }
+  .boot { display: flex; align-items: stretch; gap: 4px; }
+  .bs { flex: 1; border: 2px solid #555; border-radius: 6px; padding: 8px; font-size: 13px; }
+  .bs b { display: block; font-size: 14px; margin-bottom: 4px; }
+  .bs.q { background: #eef1f4; border-color: #9aa5b1; }
+  .bs.a { background: #fff4ea; border-color: #e0682a; }
+  .bs.m { background: #eaf2fd; border-color: #2a7de1; }
+  .go { align-self: center; color: #888; }
+  .mode { display: inline-block; font-size: 11px; background: #333; color: #fff; border-radius: 3px; padding: 0 5px; margin-bottom: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  td, th { border-bottom: 1px solid #ddd; padding: 5px 8px; text-align: left; vertical-align: middle; }
+  th { background: #f4f6f8; font-size: 13px; }
+  td.n { text-align: right; font-family: monospace; white-space: nowrap; }
+  .bar { height: 14px; background: #2a7de1; min-width: 2px; }
+  .bar.a { background: #e0682a; }
+  .bar.s { background: #3aa66a; }
+  .tot { font-weight: bold; background: #fafafa; }
+  .layers { border: 2px solid #333; border-radius: 8px; padding: 10px; }
+  .row { display: flex; gap: 8px; margin: 6px 0; }
+  .box { flex: 1; border-radius: 6px; padding: 8px; font-size: 13px; color: #fff; text-align: center; }
+  .box small { display: block; opacity: .9; font-size: 11px; }
+  .c { background: #2a7de1; } .as { background: #e0682a; } .hw { background: #3a3a3a; } .sw { background: #3aa66a; }
+  .arr { text-align: center; color: #888; font-size: 12px; margin: 0; }
+  .note { background: #f4f6f8; border-radius: 8px; padding: 10px 14px; margin: 16px 0; font-size: 14px; }
+  .legend span { display: inline-block; width: 12px; height: 12px; vertical-align: middle; margin: 0 4px 0 12px; }
+</style>
+
+<h1>minios tiny ── システム構成</h1>
+<p class="lead">アセンブリ 約 2,700 行（うちフォント・絵のデータ 約 1,000 行）＋ C 約 5,200 行 ── OS 部分 約 5 KB、全体 約 114 KB（実行ファイル 130 KB）。Linux のコードも libc も使っていない。</p>
+
+<h2>1. 起動の流れ</h2>
+<div class="boot">
+  <div class="bs q"><span class="mode">QEMU</span><b>ローダー</b>
+    <code>-kernel</code> で ELF を読む。Multiboot の印（<code>0x1BADB002</code>）を確認し、1 MB に配置</div><div class="go">▶</div>
+  <div class="bs a"><span class="mode">32 ビット</span><b>boot.s <code>_start</code></b>
+    スタック 16 KB<br>ページ表を作る（先頭 1 GB を 2 MB ページで恒等写像）<br>CR4.PAE → EFER.LME → CR0.PG</div><div class="go">▶</div>
+  <div class="bs a"><span class="mode">64 ビット</span><b><code>long_mode</code></b>
+    <code>ljmp 0x08</code> で 64 ビットのコードへ<br>ds/es/ss/fs/gs ← 0<br><code>call main</code></div><div class="go">▶</div>
+  <div class="bs a"><span class="mode">64 ビット</span><b>main.s <code>main</code></b>
+    screen_init<br>irq_init<br>sound_init<br>sprite_init<br>→ シェルのループ</div>
+</div>
+<p style="font-size:13px;color:#555">実機の BIOS やブートセクタは通らない。ローダーの役目は QEMU の <code>-kernel</code> が担う。</p>
+
+<h2>2. 構成とハードウェア</h2>
+<div class="layers">
+  <div class="row">
+    <div class="box c">snake / jump<small>robo.c actors.c stages.c pics.c ＋ snake.s</small></div>
+    <div class="box c">sound / play / smooth<small>sound.c ・ mml.c（MML 解釈）</small></div>
+  </div>
+  <div class="row"><div class="box sw">シェル（main.s）<small>1 行入力 → コマンド分岐。help / clear / snake / jump / sound / play / smooth</small></div></div>
+  <p class="arr">▼ c.s（C ⇔ asm の橋）／ memcpy・memset</p>
+  <div class="row">
+    <div class="box c" style="flex:.6">apu.c<small>ファミコン音源 矩形×2・三角・ノイズ</small></div>
+    <div class="box as">screen.s<small>画面・裏画面</small></div>
+    <div class="box as">console.s・font.s<small>8×8 文字 40×25</small></div>
+    <div class="box as">sprite.s<small>16×16 絵</small></div>
+    <div class="box as">kbd.s<small>PS/2</small></div>
+    <div class="box as">irq.s<small>IDT・PIC・PIT</small></div>
+    <div class="box as">ac97.s<small>DMA 再生</small></div>
+  </div>
+  <p class="arr">▼ ポート I/O（in/out）、メモリ直書き</p>
+  <div class="row">
+    <div class="box hw">VGA 0xA0000<small>320×200・256 色</small></div>
+    <div class="box hw">PS/2 キーボード<small>IRQ1</small></div>
+    <div class="box hw">PIT<small>100 Hz・IRQ0</small></div>
+    <div class="box hw">AC97（PCI）<small>48 kHz・16 bit・ステレオ</small></div>
+  </div>
+</div>
+<p class="legend"><span style="background:#e0682a"></span>アセンブリ<span style="background:#2a7de1"></span>C<span style="background:#3aa66a"></span>シェル（アセンブリ）<span style="background:#3a3a3a"></span>装置</p>
+
+<h2>3. サイズ（実測。コード＋定数、<code>size</code> の text。1 KB = 1000 B）</h2>
+<table>
+  <tr><th>部品</th><th>ファイル</th><th>サイズ</th><th style="width:38%"></th></tr>
+  <tr><td>起動</td><td class="mono">boot</td><td class="n">0.1 KB</td><td><div class="bar a" style="width:1px"></div></td></tr>
+  <tr><td>OS 本体（画面・文字・キー・割り込み・音の出口・シェル）</td><td class="mono">screen console font kbd irq ac97 c sprite main</td><td class="n">5.0 KB</td><td><div class="bar a" style="width:5%"></div></td></tr>
+  <tr><td>音源・MML</td><td class="mono">apu mml sound</td><td class="n">11.0 KB</td><td><div class="bar" style="width:11%"></div></td></tr>
+  <tr><td>ゲーム: スネーク</td><td class="mono">snake</td><td class="n">1.3 KB</td><td><div class="bar a" style="width:1.3%"></div></td></tr>
+  <tr><td>ゲーム: ROBO JUMP（処理）</td><td class="mono">robo actors</td><td class="n">22.9 KB</td><td><div class="bar" style="width:23%"></div></td></tr>
+  <tr><td>ゲーム: ステージ・絵のデータ</td><td class="mono">stages pics</td><td class="n">74.0 KB</td><td><div class="bar" style="width:74%"></div></td></tr>
+  <tr class="tot"><td>コード＋定数 合計</td><td></td><td class="n">114.4 KB</td><td></td></tr>
+  <tr><td>実行ファイル kernel.elf（ヘッダ込み）</td><td class="mono">build/tiny/kernel.elf</td><td class="n">129.7 KB</td><td></td></tr>
+  <tr><td>実行時のメモリ（bss 142 KB 込み）</td><td class="mono">うち裏画面 64 KB、ページ表 12 KB、スタック 16 KB</td><td class="n">256 KB</td><td></td></tr>
+</table>
+<p style="font-size:13px;color:#555">OS の部分は全体の約 4 %。大きいのは、ゲームのステージと絵のデータ（約 65 %）。ソースは .s / .c / .h で 約 8,000 行・243 KB（アセンブリ 2,748 行、C とヘッダ 5,231 行）。</p>
+
+<h2>4. メモリ配置</h2>
+<table>
+  <tr><th>番地</th><th>中身</th></tr>
+  <tr><td class="mono">0x000A0000</td><td>VGA のメモリ（モード 13h、1 点 1 バイト）。present で裏画面から写す</td></tr>
+  <tr><td class="mono">0x00100000（1 MB）</td><td>kernel: .text（Multiboot ヘッダが先頭）→ .rodata → .data → .bss</td></tr>
+  <tr><td class="mono">先頭 1 GB</td><td>恒等写像（仮想 = 物理）。PML4 → PDPT → PD（2 MB × 512）</td></tr>
+</table>
+
+<div class="note">
+  <b>割り込み:</b> IRQ0（タイマー、32 番）→ <code>ticks</code> を +1、IRQ1（キーボード、33 番）→ <code>keys[256]</code> と文字キュー、AC97 → バッファ 1 枚の再生が終わるたびに次の音を計算して詰める。<br>
+  <b>描画:</b> 裏画面（320×200）に描く → <code>wait_vsync</code> → <code>present</code> で VGA に写す。
+</div>
+</html>
